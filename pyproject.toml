@@ -1,34 +1,199 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "crimex"
 version = "0.1.0"
-description = "Deterministic crime data extraction and normalization tool"
+description = "Deterministic extractor + normalizer for FBI CDE and BJS/NCVS-style data sources."
 readme = "README.md"
-authors = [
-    { name = "Jules", email = "jules@example.com" }
-]
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-]
 requires-python = ">=3.10"
-dependencies = [
-    "requests>=2.28.0",
-    "pydantic>=1.10.0",
+license = { text = "MIT" }
+authors = [{ name = "Luke Pardue" }]
+keywords = ["crime", "ncvs", "ucr", "nibrs", "bjs", "fbi", "data", "etl", "deterministic"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
 ]
 
-[project.optional-dependencies]
-test = [
-    "pytest>=7.0.0",
+dependencies = [
+  "requests>=2.28.0",
+  "pydantic>=2.6.0",
 ]
+
+[project.urls]
+Repository = "https://example.invalid/replace-me"
+Issues = "https://example.invalid/replace-me"
 
 [project.scripts]
 crimex = "crimex.cli:main"
 
+[project.optional-dependencies]
+# One-stop shop for day-to-day development
+dev = [
+  "pytest>=9.0.0",
+  "pytest-cov>=5.0.0",
+  "ruff>=0.6.0",
+  "black>=24.0.0",
+  "isort>=5.13.0",
+  "mypy>=1.10.0",
+  "types-requests>=2.32.0.20241016",
+  "pre-commit>=3.7.0",
+  "pip-tools>=7.4.0",
+  "build>=1.2.0",
+  "twine>=5.1.0",
+]
+
+# If you prefer separating concerns
+test = [
+  "pytest>=9.0.0",
+  "pytest-cov>=5.0.0",
+]
+lint = [
+  "ruff>=0.6.0",
+  "black>=24.0.0",
+  "isort>=5.13.0",
+]
+type = [
+  "mypy>=1.10.0",
+  "types-requests>=2.32.0.20241016",
+]
+security = [
+  "bandit>=1.7.9",
+  "pip-audit>=2.7.0",
+]
+docs = [
+  "mkdocs>=1.6.0",
+  "mkdocs-material>=9.5.0",
+]
+
+# Everything (nice for CI images)
+all = [
+  "pytest>=9.0.0",
+  "pytest-cov>=5.0.0",
+  "ruff>=0.6.0",
+  "black>=24.0.0",
+  "isort>=5.13.0",
+  "mypy>=1.10.0",
+  "types-requests>=2.32.0.20241016",
+  "pre-commit>=3.7.0",
+  "pip-tools>=7.4.0",
+  "build>=1.2.0",
+  "twine>=5.1.0",
+  "bandit>=1.7.9",
+  "pip-audit>=2.7.0",
+  "mkdocs>=1.6.0",
+  "mkdocs-material>=9.5.0",
+]
+
+# ----------------------------
+# Packaging (setuptools)
+# ----------------------------
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["crimex*"]
+exclude = ["specs*", "schemas*", "tests*"]
+
+# ----------------------------
+# Pytest
+# ----------------------------
 [tool.pytest.ini_options]
+minversion = "7.0"
 testpaths = ["tests"]
-python_files = "test_*.py"
+addopts = "-q"
+filterwarnings = [
+  # Keep the output readable; remove these if you want warnings to fail CI
+  "ignore::DeprecationWarning:pydantic.*",
+]
+
+# ----------------------------
+# Coverage
+# ----------------------------
+[tool.coverage.run]
+branch = true
+source = ["crimex"]
+omit = [
+  "tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 85
+
+# ----------------------------
+# Ruff (lint + import rules)
+# ----------------------------
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [
+  ".venv",
+  "data",
+  "out",
+  "schemas",
+  "specs",
+]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "I",      # pycodestyle, pyflakes, isort (import sorting)
+  "B",                # flake8-bugbear
+  "UP",               # pyupgrade
+  "SIM",              # flake8-simplify
+  "C4",               # flake8-comprehensions
+  "S",                # bandit-like rules (lightweight)
+]
+ignore = [
+  "S101",  # allow assert in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+# ----------------------------
+# Black (formatting)
+# ----------------------------
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+# ----------------------------
+# isort (if you prefer isort; Ruff already handles I-rules)
+# ----------------------------
+[tool.isort]
+profile = "black"
+line_length = 100
+skip = [".venv", "data", "out"]
+
+# ----------------------------
+# Mypy (typing)
+# ----------------------------
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+no_implicit_optional = true
+strict_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true
+pretty = true
+
+# ----------------------------
+# Bandit (security)
+# ----------------------------
+[tool.bandit]
+skips = ["B101"] # allow assert usage
+
+# ----------------------------
+# Build / wheel tweaks (optional)
+# ----------------------------
+[tool.setuptools.dynamic]
+# If later you want to pull version from a module, you can switch to:
+# version = {attr = "crimex.__version__"}
