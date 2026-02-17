@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "ManifestEntry": {
+      "description": "Entry in the run manifest describing a generated file.",
+      "properties": {
+        "filepath": {
+          "description": "Relative path to the file",
+          "title": "Filepath",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "SHA256 hash of the file content",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "description": "Size of the file in bytes",
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "created_at": {
+          "description": "Creation timestamp",
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "filepath",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "ManifestEntry",
+      "type": "object"
+    }
+  },
+  "description": "Manifest for a run, listing all artifacts created.",
+  "properties": {
+    "run_id": {
+      "description": "Unique ID for the run (e.g., timestamp + hash)",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "timestamp": {
+      "description": "Run timestamp",
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "command": {
+      "description": "The command that triggered this run",
+      "title": "Command",
+      "type": "string"
+    },
+    "artifacts": {
+      "description": "List of artifacts created",
+      "items": {
+        "$ref": "#/$defs/ManifestEntry"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run_id",
+    "command"
+  ],
+  "title": "RunManifest",
+  "type": "object"
+}

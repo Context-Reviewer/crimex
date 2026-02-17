@@ -1,0 +1,7 @@
+{
+    "source": "fbi_cde",
+    "endpoint": "violent-crime",
+    "params": {"state": "US"},
+    "series_name": "violent_crime",
+    "query_fingerprint": "fbi123"
+}

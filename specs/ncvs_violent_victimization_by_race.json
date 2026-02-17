@@ -1,0 +1,11 @@
+{
+    "source": "bjs_ncvs",
+    "dataset_id": "gcuy-rt5g",
+    "params": {
+        "$where": "year >= 2010"
+    },
+    "series_name": "rate_per_1000",
+    "expected_unit": "rate_per_1000",
+    "expected_denominator": 1000,
+    "notes": "NCVS Victimization Rates by Race (Example SODA Query)"
+}

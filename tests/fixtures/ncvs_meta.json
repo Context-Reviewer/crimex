@@ -1,0 +1,7 @@
+{
+    "source": "bjs_ncvs",
+    "dataset_id": "ncvs-123",
+    "params": {"group": "race"},
+    "series_name": "rate",
+    "query_fingerprint": "ncvs456"
+}

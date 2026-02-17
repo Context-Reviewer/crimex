@@ -1,0 +1,128 @@
+{
+  "description": "Canonical fact schema for normalized crime data.",
+  "properties": {
+    "source": {
+      "description": "The data source (e.g., fbi_cde, bjs_ncvs)",
+      "title": "Source",
+      "type": "string"
+    },
+    "series": {
+      "description": "The type of crime/stat being measured (e.g., violent_crime, victimization_rate)",
+      "title": "Series",
+      "type": "string"
+    },
+    "geo": {
+      "description": "Geographic identifier (e.g., US, AL, NY)",
+      "title": "Geo",
+      "type": "string"
+    },
+    "period": {
+      "description": "The year or period of the data (e.g., 2020)",
+      "title": "Period",
+      "type": "integer"
+    },
+    "value": {
+      "description": "The measured value",
+      "title": "Value",
+      "type": "number"
+    },
+    "unit": {
+      "description": "The unit of the value (e.g., count, rate_per_100k)",
+      "title": "Unit",
+      "type": "string"
+    },
+    "denominator": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The population or base used for rates (if applicable)",
+      "title": "Denominator"
+    },
+    "dimensions": {
+      "additionalProperties": true,
+      "description": "Additional dimensions (e.g., race, age, sex)",
+      "title": "Dimensions",
+      "type": "object"
+    },
+    "ci_lower": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Confidence interval lower bound",
+      "title": "Ci Lower"
+    },
+    "ci_upper": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Confidence interval upper bound",
+      "title": "Ci Upper"
+    },
+    "se": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Standard error",
+      "title": "Se"
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Any notes or caveats about this data point",
+      "title": "Notes"
+    },
+    "retrieved_at": {
+      "description": "Timestamp when this fact was retrieved/processed",
+      "format": "date-time",
+      "title": "Retrieved At",
+      "type": "string"
+    },
+    "query_fingerprint": {
+      "description": "Hash of the query/spec used to generate this fact",
+      "title": "Query Fingerprint",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source",
+    "series",
+    "geo",
+    "period",
+    "value",
+    "unit",
+    "query_fingerprint"
+  ],
+  "title": "Fact",
+  "type": "object"
+}

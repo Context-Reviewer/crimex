@@ -1,0 +1,11 @@
+{
+    "source": "fbi_cde",
+    "endpoint": "summarized/national/violent-crime",
+    "params": {
+        "from": 2010,
+        "to": 2020
+    },
+    "series_name": "violent_crime",
+    "expected_unit": "count",
+    "notes": "Violent crime trends 2010-2020 (National)"
+}

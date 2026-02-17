@@ -1,0 +1,106 @@
+{
+  "additionalProperties": false,
+  "description": "Schema for a data query specification.",
+  "properties": {
+    "source": {
+      "description": "Source system: 'fbi_cde' or 'bjs_ncvs'",
+      "title": "Source",
+      "type": "string"
+    },
+    "endpoint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "API endpoint path (e.g., /api/data/...)",
+      "title": "Endpoint"
+    },
+    "dataset_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Dataset ID for BJS/SODA (e.g., 'ncvs-2020')",
+      "title": "Dataset Id"
+    },
+    "params": {
+      "additionalProperties": true,
+      "description": "Query parameters for the API call",
+      "title": "Params",
+      "type": "object"
+    },
+    "series_name": {
+      "description": "Name for the resulting series",
+      "title": "Series Name",
+      "type": "string"
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Notes about what this query fetches",
+      "title": "Notes"
+    },
+    "expected_unit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Expected unit of the result (for validation)",
+      "title": "Expected Unit"
+    },
+    "expected_denominator": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Expected denominator (if constant)",
+      "title": "Expected Denominator"
+    },
+    "download_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Fallback URL for direct download if API fails (NCVS)",
+      "title": "Download Url"
+    }
+  },
+  "required": [
+    "source",
+    "series_name"
+  ],
+  "title": "QuerySpec",
+  "type": "object"
+}
