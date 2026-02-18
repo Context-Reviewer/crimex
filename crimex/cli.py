@@ -5,6 +5,7 @@ import argparse
 import sys
 import os
 from pathlib import Path
+from datetime import datetime, timezone
 
 from crimex import __version__
 from crimex.io import read_json, ensure_directory, read_jsonl
@@ -17,6 +18,22 @@ from crimex.manifest import generate_manifest
 from crimex.validate import validate_facts
 
 from crimex.run import RunContext
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _append_log(log_path: Path, message: str) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    line = f"{_utc_now_iso()} {message}\n"
+    log_path.open("a", encoding="utf-8").write(line)
+
+
+def _dir_has_files(p: Path) -> bool:
+    if not p.exists():
+        return False
+    return any(x.is_file() for x in p.rglob("*"))
 
 
 def main():
@@ -58,7 +75,7 @@ def main():
     validate_parser = subparsers.add_parser("validate", help="Validate facts against schema")
     validate_parser.add_argument("--facts", required=True, help="Path to facts JSONL file")
 
-    # NEW: Governed Run command (non-breaking additive)
+    # Governed Run command (additive; existing commands unchanged)
     run_parser = subparsers.add_parser(
         "run",
         help="Execute a governed run: fetch -> normalize -> report -> validate with artifact hashing",
@@ -80,6 +97,11 @@ def main():
         help="Overwrite an existing run directory with the same run-id",
     )
     run_parser.add_argument("--force", action="store_true", help="Force re-fetch even if cached")
+    run_parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Skip network fetch. Use existing raw data under the run directory (or fail if none).",
+    )
     run_parser.add_argument(
         "--explain",
         action="store_true",
@@ -195,19 +217,22 @@ def handle_run(args):
     """
     Governed run:
       - creates out/runs/<run_id>/...
-      - fetches raw data into raw/<source>/
+      - fetches raw data into raw/<source>/ (unless --offline)
       - normalizes into facts/facts.jsonl
       - generates reports into reports/
       - validates facts
       - hashes artifacts and writes run_manifest.json
+      - ALWAYS writes logs/run.log and run_manifest.json, even on failure
     """
     spec_path = args.spec
     out_base = Path(args.out_base)
     run_id = args.run_id
     overwrite = args.overwrite
     force = args.force
+    offline = args.offline
     explain = args.explain
 
+    # Read spec first (fail loud, before run creation)
     print(f"Reading spec from {spec_path} ...")
     try:
         spec = read_json(spec_path)
@@ -220,6 +245,7 @@ def handle_run(args):
         print("Error: Spec missing 'source' field", file=sys.stderr)
         sys.exit(1)
 
+    # Create governed run directory early so failures are captured
     try:
         run = RunContext(
             base_out=out_base,
@@ -231,77 +257,121 @@ def handle_run(args):
         print(f"Error creating governed run directory: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Paths
+    log_path = run.logs_dir() / "run.log"
+    _append_log(log_path, f"START run_id={run.run_id} version={__version__} source={source}")
+    _append_log(
+        log_path,
+        f"spec_path={spec_path} out_base={out_base} overwrite={overwrite} force={force} offline={offline}",
+    )
+
+    # Paths inside run
     raw_source_dir = run.raw_dir() / source
     facts_path = run.facts_dir() / "facts.jsonl"
+    reports_dir = run.reports_dir()
 
-    # Ensure subdir exists
     raw_source_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fetch
-    try:
-        if source == "fbi_cde":
-            fetch_fbi_data(spec, str(raw_source_dir), force)
-        elif source == "bjs_ncvs":
-            fetch_ncvs_data(spec, str(raw_source_dir), force)
-        else:
-            print(f"Error: Unknown source '{source}'", file=sys.stderr)
-            sys.exit(1)
-    except Exception as e:
-        print(f"Error during fetch: {e}", file=sys.stderr)
-        sys.exit(1)
+    def _finalize_and_exit(exit_code: int) -> None:
+        # Try to hash what exists; do not block manifest creation on hashing hiccups
+        try:
+            run.register_tree(run.raw_dir())
+        except Exception as e:
+            _append_log(log_path, f"WARNING hashing raw failed: {type(e).__name__}: {e}")
 
-    # Register raw artifacts
-    try:
-        run.register_tree(run.raw_dir())
-    except Exception as e:
-        print(f"Error hashing raw artifacts: {e}", file=sys.stderr)
-        sys.exit(1)
+        try:
+            if facts_path.exists():
+                run.register_artifact(facts_path)
+        except Exception as e:
+            _append_log(log_path, f"WARNING hashing facts failed: {type(e).__name__}: {e}")
+
+        try:
+            for rp in sorted(reports_dir.glob("*")):
+                if rp.is_file():
+                    run.register_artifact(rp)
+        except Exception as e:
+            _append_log(log_path, f"WARNING hashing reports failed: {type(e).__name__}: {e}")
+
+        try:
+            if log_path.exists():
+                run.register_artifact(log_path)
+        except Exception as e:
+            # last resort; still attempt manifest
+            pass
+
+        try:
+            run.write_manifest()
+        except Exception as e:
+            print(f"Error finalizing governed run: {e}", file=sys.stderr)
+            sys.exit(2)
+
+        print(f"Run complete: {run.path}")
+        sys.exit(exit_code)
+
+    # Fetch (unless offline)
+    if offline:
+        _append_log(log_path, "OFFLINE mode enabled: skipping fetch.")
+        if not _dir_has_files(raw_source_dir):
+            _append_log(log_path, f"ERROR: offline mode requires existing raw data under {raw_source_dir}")
+            print(f"Error: offline mode requires existing raw data under {raw_source_dir}", file=sys.stderr)
+            _finalize_and_exit(1)
+    else:
+        _append_log(log_path, "FETCH begin")
+        try:
+            if source == "fbi_cde":
+                fetch_fbi_data(spec, str(raw_source_dir), force)
+            elif source == "bjs_ncvs":
+                fetch_ncvs_data(spec, str(raw_source_dir), force)
+            else:
+                _append_log(log_path, f"ERROR: unknown source '{source}'")
+                print(f"Error: Unknown source '{source}'", file=sys.stderr)
+                _finalize_and_exit(1)
+        except BaseException as e:
+            # Catch SystemExit from connectors as well
+            _append_log(log_path, f"ERROR during fetch: {type(e).__name__}: {e}")
+            print(f"Error during fetch: {e}", file=sys.stderr)
+            _finalize_and_exit(1)
+        _append_log(log_path, "FETCH end")
 
     # Normalize
+    _append_log(log_path, "NORMALIZE begin")
     try:
         normalize_all(str(run.raw_dir()), str(facts_path))
-    except Exception as e:
+    except BaseException as e:
+        _append_log(log_path, f"ERROR during normalization: {type(e).__name__}: {e}")
         print(f"Error during normalization: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # Register facts
-    try:
-        run.register_artifact(facts_path)
-    except Exception as e:
-        print(f"Error hashing facts artifact: {e}", file=sys.stderr)
-        sys.exit(1)
+        _finalize_and_exit(1)
+    _append_log(log_path, "NORMALIZE end")
 
     # Report
+    _append_log(log_path, "REPORT begin")
     try:
-        reports_dir = run.reports_dir()
-        reports_dir.mkdir(parents=True, exist_ok=True)
-
         facts = read_jsonl(str(facts_path))
 
         csv_file = reports_dir / "report.csv"
         write_facts_to_csv(facts, str(csv_file))
-        run.register_artifact(csv_file)
 
         md_file = reports_dir / "report.md"
         write_facts_to_markdown(facts, str(md_file), explain=explain)
-        run.register_artifact(md_file)
-    except Exception as e:
+    except BaseException as e:
+        _append_log(log_path, f"ERROR during report: {type(e).__name__}: {e}")
         print(f"Error during report generation: {e}", file=sys.stderr)
-        sys.exit(1)
+        _finalize_and_exit(1)
+    _append_log(log_path, "REPORT end")
 
     # Validate
+    _append_log(log_path, "VALIDATE begin")
     try:
         validate_facts(str(facts_path))
-    except Exception as e:
+    except BaseException as e:
+        _append_log(log_path, f"ERROR during validation: {type(e).__name__}: {e}")
         print(f"Error during validation: {e}", file=sys.stderr)
-        sys.exit(1)
+        _finalize_and_exit(1)
+    _append_log(log_path, "VALIDATE end")
 
-    # Manifest (governed run manifest)
-    try:
-        run.write_manifest()
-    except Exception as e:
-        print(f"Error writing governed run manifest: {e}", file=sys.stderr)
-        sys.exit(1)
+    _append_log(log_path, "SUCCESS")
+    _finalize_and_exit(0)
 
-    print(f"Run complete: {run.path}")
+
+if __name__ == "__main__":
+    main()

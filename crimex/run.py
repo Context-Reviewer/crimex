@@ -40,7 +40,7 @@ class RunContext:
     """
 
     base_out: Path
-    run_id: str = field(default_factory=_default_run_id)
+    run_id: str | None = None
     overwrite: bool = False
     crimex_version: str = "0.1.1"
 
@@ -50,6 +50,9 @@ class RunContext:
     def __post_init__(self) -> None:
         self.base_out = Path(self.base_out)
         self.base_out.mkdir(parents=True, exist_ok=True)
+
+        if self.run_id is None:
+            self.run_id = _default_run_id()
 
         self.path = self.base_out / self.run_id
 
@@ -126,6 +129,6 @@ class RunContext:
             encoding="utf-8",
         )
 
-        # Register manifest AFTER writing
-        self.register_artifact(manifest_path)
+        # NOTE: We intentionally do NOT require the manifest to include itself
+        # in its own artifacts listing (self-referential hashing problem).
         return manifest_path
