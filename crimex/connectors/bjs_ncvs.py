@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 from urllib.parse import urlencode
@@ -120,10 +120,12 @@ def fetch_ncvs_data(spec: Dict[str, Any], output_dir: str, force: bool = False) 
         "http_status": resp.status_code,
         "retry_attempts": 0,
         "fallback_used": False,
-        "fetched_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "response_sha256": response_sha256,
         "artifact_path": f"raw/bjs_ncvs/{raw_path.name}",
     }
 
     receipt_path = raw_path.parent / f"{response_sha256}.receipt.json"
     receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+

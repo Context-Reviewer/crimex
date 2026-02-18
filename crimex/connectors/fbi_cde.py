@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -73,7 +73,7 @@ def _write_receipt(
         "http_status": http_status,
         "retry_attempts": retry_attempts,
         "fallback_used": fallback_used,
-        "fetched_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "response_sha256": response_sha256,
         "artifact_path": f"raw/{source}/{raw_path.name}",
     }
@@ -165,3 +165,5 @@ def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -
             return cached
 
     raise FbiFetchError(last_error or "Unknown fetch failure")
+
+
