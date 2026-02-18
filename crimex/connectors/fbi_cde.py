@@ -46,7 +46,6 @@ def _resolve_cache_dir(output_dir: str) -> Path:
 
 def _try_read_cache(cache_file: Path, meta_file: Path, spec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if cache_file.exists():
-        # Ensure metadata exists too
         if not meta_file.exists():
             write_json(spec, str(meta_file))
         return read_json(str(cache_file))
@@ -97,7 +96,6 @@ def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -
     cache_file = cache_dir / f"{cache_key}.json"
     meta_file = cache_dir / f"{cache_key}.meta.json"
 
-    # Normal cache reuse path
     if not force:
         cached = _try_read_cache(cache_file, meta_file, spec)
         if cached is not None:
@@ -107,15 +105,13 @@ def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -
     print(f"Fetching from {url} ...")
 
     last_error: Optional[str] = None
-
-    # Attempt 1 + retries
     attempts = 1 + len(RETRY_DELAYS)
+
     for i in range(attempts):
         try:
             response = requests.get(url, params=request_params, headers=headers, timeout=30)
         except requests.RequestException as e:
             last_error = f"Network error fetching {url}: {e}"
-            # retry
         else:
             if response.status_code == 200:
                 data = response.json()
@@ -127,15 +123,12 @@ def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -
             snippet = response.text[:500]
             last_error = f"HTTP {response.status_code} fetching {url}: {snippet}"
 
-            # Only retry transient codes
             if response.status_code not in RETRY_STATUS:
                 raise FbiFetchError(last_error)
 
-        # If there is another retry scheduled, sleep deterministically
         if i < len(RETRY_DELAYS):
             time.sleep(RETRY_DELAYS[i])
 
-    # Retries exhausted: if we have cache and not force, fallback
     if not force:
         cached = _try_read_cache(cache_file, meta_file, spec)
         if cached is not None:
