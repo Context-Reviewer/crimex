@@ -22,6 +22,7 @@ from crimex.run import RunContext
 from crimex.verify_run import verify_run
 
 from crimex.bundle import create_bundle, BundleError
+from crimex.qa import validate_run_facts
 
 
 def _utc_now_iso() -> str:
@@ -146,6 +147,17 @@ def main():
         help="Overwrite an existing run_bundle.zip if present",
     )
 
+    # qa command (additive)
+    qa_parser = subparsers.add_parser(
+        "qa",
+        help="Run deterministic QA validation on facts/facts.jsonl (read-only)",
+    )
+    qa_parser.add_argument(
+        "--run-dir",
+        required=True,
+        help="Path to a run directory containing facts/facts.jsonl",
+    )
+
     args = parser.parse_args()
 
     if args.command == "fetch":
@@ -164,9 +176,23 @@ def main():
         handle_verify_run(args)
     elif args.command == "bundle":
         handle_bundle(args)
+    elif args.command == "qa":
+        handle_qa(args)
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def handle_qa(args) -> None:
+    run_dir = Path(args.run_dir)
+    errors = validate_run_facts(run_dir)
+    if errors:
+        print("QA FAIL")
+        for e in errors:
+            print(e)
+        sys.exit(1)
+    print("QA PASS")
+    sys.exit(0)
 
 
 def handle_bundle(args) -> None:
@@ -183,6 +209,7 @@ def handle_bundle(args) -> None:
 
 
 def handle_fetch(args):
+    """Handles the fetch command."""
     spec_path = args.spec
     output_dir = args.out
     force = args.force
@@ -211,6 +238,7 @@ def handle_fetch(args):
 
 
 def handle_normalize(args):
+    """Handles the normalize command."""
     raw_dir = args.raw
     output_file = args.out
 
@@ -222,6 +250,7 @@ def handle_normalize(args):
 
 
 def handle_report(args):
+    """Handles the report command."""
     facts_path = args.facts
     output_dir = args.out
     explain = args.explain
@@ -243,6 +272,7 @@ def handle_report(args):
 
 
 def handle_manifest(args):
+    """Handles the manifest command."""
     root_dir = args.root
     output_file = args.out
 
@@ -256,6 +286,7 @@ def handle_manifest(args):
 
 
 def handle_validate(args):
+    """Handles the validate command."""
     facts_path = args.facts
     validate_facts(facts_path)
 
@@ -275,6 +306,16 @@ def handle_verify_run(args):
 
 
 def handle_run(args):
+    """
+    Governed run:
+      - creates out/runs/<run_id>/...
+      - fetches raw data into raw/<source>/ (unless --offline)
+      - normalizes into facts/facts.jsonl
+      - generates reports into reports/
+      - validates facts
+      - hashes artifacts and writes run_manifest.json
+      - ALWAYS writes logs/run.log and run_manifest.json, even on failure
+    """
     spec_path = args.spec
     out_base = Path(args.out_base)
     run_id = args.run_id
