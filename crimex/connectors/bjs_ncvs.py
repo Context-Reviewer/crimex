@@ -1,98 +1,143 @@
-"""
-BJS NCVS connector.
-Fetches data from BJS NCVS (SODA API or direct download).
-"""
-import requests
-import sys
-import os
+from __future__ import annotations
+
 import json
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional
-from crimex.hashing import compute_cache_key, hash_string
-from crimex.io import read_json, write_json, write_text, load_text
+from urllib.parse import urlencode
 
-SODA_BASE_URL = "https://data.ojp.usdoj.gov/resource"
+import requests
 
-def fetch_ncvs_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -> Any:
+
+BASE_URL = "https://api.ojp.gov/bjsdataset/v1"
+DEFAULT_LIMIT = 500000  # NCVS datasets exceed 1,000 rows; pick a safe high default
+
+
+@dataclass(frozen=True)
+class NcvsRequest:
+    dataset: str                 # e.g. "gcuy-rt5g"
+    fmt: str = "json"            # "json" or "csv"
+    where: Optional[str] = None  # Socrata-style $where
+    limit: int = DEFAULT_LIMIT
+
+
+class NcvsFetchError(RuntimeError):
+    pass
+
+
+def _safe_filename(s: str) -> str:
+    return "".join(c if c.isalnum() or c in ("-", "_", ".", "@") else "_" for c in s)
+
+
+def _build_url(req: NcvsRequest) -> str:
+    resource = f"{req.dataset}.{req.fmt}"
+    params: Dict[str, Any] = {"$limit": int(req.limit)}
+    if req.where:
+        params["$where"] = req.where
+
+    qs = urlencode(params, doseq=True)
+    return f"{BASE_URL}/{resource}?{qs}"
+
+
+def _get_param(spec: Dict[str, Any], key: str) -> Any:
     """
-    Fetches data from BJS NCVS using SODA API or direct download.
-    Saves both raw response and metadata.
+    Helper for legacy spec shape: params may contain $where, $limit, etc.
     """
-    dataset_id = spec.get("dataset_id")
-    download_url = spec.get("download_url")
-    params = spec.get("params", {})
-    
-    if not dataset_id and not download_url:
-        print("Error: NCVS query spec must provide either 'dataset_id' or 'download_url'.", file=sys.stderr)
-        sys.exit(1)
-        
-    headers = {"Accept": "application/json"}
-    
-    # Determine source and cache key
-    if dataset_id:
-        endpoint = f"{dataset_id}.json"
-        url = f"{SODA_BASE_URL}/{endpoint}"
-        # SODA params
-        request_params = params
-        # Include headers in cache key
-        cache_key = compute_cache_key(endpoint, request_params, headers)
-        is_json = True
-    else:
-        # Direct download
-        url = download_url
-        request_params = {}
-        # Direct download cache key includes URL + headers (if any relevant)
-        cache_key = hash_string(url) # Headers for direct download might be minimal
-        is_json = url.lower().endswith(".json")
+    params = spec.get("params")
+    if isinstance(params, dict):
+        return params.get(key)
+    return None
 
-    # Define cache paths
-    cache_dir = os.path.join(output_dir, "raw", "bjs_ncvs")
-    ext = "json" if is_json else "csv" 
-    if not is_json:
-        if url.lower().endswith(".csv"):
-            ext = "csv"
-        else:
-            ext = "dat"
-            
-    cache_file = os.path.join(cache_dir, f"{cache_key}.{ext}")
-    meta_file = os.path.join(cache_dir, f"{cache_key}.meta.json")
-    
-    if os.path.exists(cache_file) and not force:
-        print(f"Using cached response: {cache_file}")
-        if not os.path.exists(meta_file):
-            write_json(spec, meta_file)
-        if is_json or ext == "json":
-            return read_json(cache_file)
-        else:
-            return load_text(cache_file)
-    
+
+def _parse_spec_to_request(spec: Dict[str, Any]) -> NcvsRequest:
+    """
+    Accepts both:
+      New shape:
+        dataset, format, where, limit
+      Legacy shape:
+        dataset_id, params: {"$where": "...", "$limit": N}
+    Ignores unrelated fields (series_name, expected_unit, etc).
+    """
+    dataset = spec.get("dataset")
+    if dataset is None:
+        dataset = spec.get("dataset_id")
+
+    if not dataset or not isinstance(dataset, str):
+        raise ValueError("NCVS spec missing required string field: 'dataset' (or legacy 'dataset_id')")
+
+    fmt = spec.get("format", None)
+    if fmt is None:
+        fmt = spec.get("fmt", None)
+    if fmt is None:
+        # legacy sometimes implies json
+        fmt = "json"
+
+    if fmt not in ("json", "csv"):
+        raise ValueError("NCVS spec 'format' must be 'json' or 'csv'")
+
+    where = spec.get("where")
+    if where is None:
+        where = _get_param(spec, "$where")
+
+    if where is not None and not isinstance(where, str):
+        raise ValueError("NCVS spec 'where' must be a string when provided (or params.$where)")
+
+    limit = spec.get("limit")
+    if limit is None:
+        limit = _get_param(spec, "$limit")
+    if limit is None:
+        limit = DEFAULT_LIMIT
+
+    if not isinstance(limit, int) or limit <= 0:
+        raise ValueError("NCVS spec 'limit' must be a positive integer (or params.$limit)")
+
+    return NcvsRequest(dataset=dataset, fmt=fmt, where=where, limit=limit)
+
+
+def fetch_ncvs_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -> None:
+    """
+    Fetch NCVS data from the OJP NCVS REST API (api.ojp.gov) and store raw artifact(s).
+
+    Determinism rules:
+    - output file name is derived from dataset + format + where + limit (sanitized)
+    - if output exists and not force: do not overwrite
+    - failures raise exceptions (no sys.exit)
+    """
+    req = _parse_spec_to_request(spec)
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    where_part = _safe_filename(req.where) if req.where else "all"
+    fname = f"{req.dataset}.{req.fmt}.where_{where_part}.limit_{req.limit}.raw"
+    raw_path = out_dir / fname
+
+    if raw_path.exists() and not force:
+        print(f"NCVS raw cache hit: {raw_path}")
+        return
+
+    url = _build_url(req)
     print(f"Fetching from {url} ...")
+
     try:
-        response = requests.get(url, params=request_params, headers=headers, timeout=60)
-        
-        if response.status_code != 200:
-            print(f"Error fetching data from {url}", file=sys.stderr)
-            print(f"Status Code: {response.status_code}", file=sys.stderr)
-            print(f"Response Body (first 500 chars): {response.text[:500]}", file=sys.stderr)
-            sys.exit(1)
-            
-        # Save to cache
-        if is_json:
-            data = response.json()
-            write_json(data, cache_file)
-            write_json(spec, meta_file)
-            print(f"Saved response to {cache_file}")
-            return data
-        else:
-            # Text/CSV content
-            content = response.text
-            write_text(content, cache_file)
-            write_json(spec, meta_file)
-            print(f"Saved response to {cache_file}")
-            return content
-            
+        resp = requests.get(url, timeout=60)
     except requests.RequestException as e:
-        print(f"Network error fetching {url}: {e}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr)
-        sys.exit(1)
+        raise NcvsFetchError(f"Network error fetching {url}: {e}") from e
+
+    if resp.status_code != 200:
+        snippet = resp.text[:300].replace("\n", " ").strip()
+        raise NcvsFetchError(f"HTTP {resp.status_code} fetching {url}: {snippet}")
+
+    raw_path.write_bytes(resp.content)
+    print(f"Wrote raw NCVS artifact: {raw_path}")
+
+    if req.fmt == "json":
+        try:
+            data = resp.json()
+            pretty_path = out_dir / (raw_path.name + ".pretty.json")
+            pretty_path.write_text(
+                json.dumps(data, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(f"Wrote pretty JSON: {pretty_path}")
+        except Exception:
+            pass
