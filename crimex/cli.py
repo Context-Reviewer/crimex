@@ -6,6 +6,7 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Any, Dict, cast
 
 from crimex import __version__
 from crimex.io import read_json, ensure_directory, read_jsonl
@@ -19,6 +20,8 @@ from crimex.validate import validate_facts
 
 from crimex.run import RunContext
 from crimex.verify_run import verify_run
+
+from crimex.bundle import create_bundle, BundleError
 
 
 def _utc_now_iso() -> str:
@@ -35,6 +38,13 @@ def _dir_has_files(p: Path) -> bool:
     if not p.exists():
         return False
     return any(x.is_file() for x in p.rglob("*"))
+
+
+def _read_spec_dict(spec_path: str) -> Dict[str, Any]:
+    obj = read_json(spec_path)
+    if not isinstance(obj, dict):
+        raise ValueError("Spec JSON must be an object (dictionary) at the top level")
+    return cast(Dict[str, Any], obj)
 
 
 def main():
@@ -109,7 +119,7 @@ def main():
         help="Include explanation text in markdown report",
     )
 
-    # NEW: verify-run command
+    # verify-run command (existing behavior preserved)
     verify_parser = subparsers.add_parser(
         "verify-run",
         help="Verify a governed run directory against its run_manifest.json (SHA256 check)",
@@ -118,6 +128,22 @@ def main():
         "--run-dir",
         required=True,
         help="Path to a run directory containing run_manifest.json",
+    )
+
+    # bundle command (additive)
+    bundle_parser = subparsers.add_parser(
+        "bundle",
+        help="Export deterministic run bundle (run_bundle.zip) and register it in run_manifest.json",
+    )
+    bundle_parser.add_argument(
+        "--run-dir",
+        required=True,
+        help="Path to a run directory containing run_manifest.json",
+    )
+    bundle_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing run_bundle.zip if present",
     )
 
     args = parser.parse_args()
@@ -136,20 +162,34 @@ def main():
         handle_run(args)
     elif args.command == "verify-run":
         handle_verify_run(args)
+    elif args.command == "bundle":
+        handle_bundle(args)
     else:
         parser.print_help()
         sys.exit(1)
 
 
+def handle_bundle(args) -> None:
+    run_dir = Path(args.run_dir)
+    try:
+        create_bundle(run_dir, force=bool(args.force))
+    except BundleError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(0)
+
+
 def handle_fetch(args):
-    """Handles the fetch command."""
     spec_path = args.spec
     output_dir = args.out
     force = args.force
 
     print(f"Reading spec from {spec_path} ...")
     try:
-        spec = read_json(spec_path)
+        spec = _read_spec_dict(spec_path)
     except Exception as e:
         print(f"Error reading spec file: {e}", file=sys.stderr)
         sys.exit(1)
@@ -171,7 +211,6 @@ def handle_fetch(args):
 
 
 def handle_normalize(args):
-    """Handles the normalize command."""
     raw_dir = args.raw
     output_file = args.out
 
@@ -183,7 +222,6 @@ def handle_normalize(args):
 
 
 def handle_report(args):
-    """Handles the report command."""
     facts_path = args.facts
     output_dir = args.out
     explain = args.explain
@@ -197,17 +235,14 @@ def handle_report(args):
 
     ensure_directory(output_dir)
 
-    # CSV Report
     csv_file = os.path.join(output_dir, "report.csv")
     write_facts_to_csv(facts, csv_file)
 
-    # Markdown Report
     md_file = os.path.join(output_dir, "report.md")
     write_facts_to_markdown(facts, md_file, explain=explain)
 
 
 def handle_manifest(args):
-    """Handles the manifest command."""
     root_dir = args.root
     output_file = args.out
 
@@ -221,7 +256,6 @@ def handle_manifest(args):
 
 
 def handle_validate(args):
-    """Handles the validate command."""
     facts_path = args.facts
     validate_facts(facts_path)
 
@@ -241,16 +275,6 @@ def handle_verify_run(args):
 
 
 def handle_run(args):
-    """
-    Governed run:
-      - creates out/runs/<run_id>/...
-      - fetches raw data into raw/<source>/ (unless --offline)
-      - normalizes into facts/facts.jsonl
-      - generates reports into reports/
-      - validates facts
-      - hashes artifacts and writes run_manifest.json
-      - ALWAYS writes logs/run.log and run_manifest.json, even on failure
-    """
     spec_path = args.spec
     out_base = Path(args.out_base)
     run_id = args.run_id
@@ -261,7 +285,7 @@ def handle_run(args):
 
     print(f"Reading spec from {spec_path} ...")
     try:
-        spec = read_json(spec_path)
+        spec = _read_spec_dict(spec_path)
     except Exception as e:
         print(f"Error reading spec file: {e}", file=sys.stderr)
         sys.exit(1)
