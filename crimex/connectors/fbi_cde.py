@@ -1,11 +1,14 @@
+# FILE: crimex/connectors/fbi_cde.py
 """
 FBI Crime Data Explorer (CDE) connector.
 Fetches data from the FBI CDE API.
 """
 from __future__ import annotations
 
+import json
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -33,11 +36,6 @@ def _validate_month_year(value: Any, field: str) -> None:
 
 
 def _resolve_cache_dir(output_dir: str) -> Path:
-    """
-    Backward-compatible behavior:
-      - If output_dir already points at .../raw/fbi_cde (governed runs), use it as-is.
-      - Otherwise (plain fetch command), create output_dir/raw/fbi_cde.
-    """
     base = Path(output_dir)
     if base.name == "fbi_cde":
         return base
@@ -52,16 +50,39 @@ def _try_read_cache(cache_file: Path, meta_file: Path, spec: Dict[str, Any]) -> 
     return None
 
 
-def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -> Dict[str, Any]:
-    """
-    Fetches data from FBI CDE API with caching.
+def _write_receipt(
+    *,
+    source: str,
+    endpoint: str,
+    request_url: str,
+    params: Dict[str, Any],
+    http_status: int,
+    retry_attempts: int,
+    fallback_used: bool,
+    response_sha256: str,
+    raw_path: Path,
+) -> None:
+    safe_params = {k: v for k, v in params.items() if k.lower() != "api_key"}
+    safe_params = dict(sorted(safe_params.items(), key=lambda kv: kv[0]))
 
-    Determinism rules:
-    - Cache key excludes api_key.
-    - If cached and not force: reuse.
-    - On transient HTTP/network errors: retry deterministically.
-    - If retries fail and cache exists (and not force): fallback to cache.
-    """
+    receipt = {
+        "source": source,
+        "endpoint": endpoint,
+        "request_url": request_url,
+        "request_params_redacted": safe_params,
+        "http_status": http_status,
+        "retry_attempts": retry_attempts,
+        "fallback_used": fallback_used,
+        "fetched_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "response_sha256": response_sha256,
+        "artifact_path": f"raw/{source}/{raw_path.name}",
+    }
+
+    receipt_path = raw_path.parent / f"{response_sha256}.receipt.json"
+    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -> Dict[str, Any]:
     endpoint = spec.get("endpoint")
     if not endpoint or not isinstance(endpoint, str):
         raise FbiFetchError("Spec missing required string field: 'endpoint'")
@@ -99,10 +120,7 @@ def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -
     if not force:
         cached = _try_read_cache(cache_file, meta_file, spec)
         if cached is not None:
-            print(f"Using cached response: {cache_file}")
             return cached
-
-    print(f"Fetching from {url} ...")
 
     last_error: Optional[str] = None
     attempts = 1 + len(RETRY_DELAYS)
@@ -117,7 +135,19 @@ def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -
                 data = response.json()
                 write_json(data, str(cache_file))
                 write_json(spec, str(meta_file))
-                print(f"Saved response to {cache_file}")
+
+                response_sha256 = cache_file.stem
+                _write_receipt(
+                    source="fbi_cde",
+                    endpoint=endpoint,
+                    request_url=url,
+                    params=request_params,
+                    http_status=response.status_code,
+                    retry_attempts=i,
+                    fallback_used=False,
+                    response_sha256=response_sha256,
+                    raw_path=cache_file,
+                )
                 return data
 
             snippet = response.text[:500]
@@ -132,7 +162,6 @@ def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -
     if not force:
         cached = _try_read_cache(cache_file, meta_file, spec)
         if cached is not None:
-            print(f"FALLBACK: using cached response after fetch failures: {cache_file}")
             return cached
 
     raise FbiFetchError(last_error or "Unknown fetch failure")

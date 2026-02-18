@@ -1,23 +1,25 @@
+# FILE: crimex/connectors/bjs_ncvs.py
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 from urllib.parse import urlencode
 
 import requests
 
 
 BASE_URL = "https://api.ojp.gov/bjsdataset/v1"
-DEFAULT_LIMIT = 500000  # NCVS datasets exceed 1,000 rows; pick a safe high default
+DEFAULT_LIMIT = 500000
 
 
 @dataclass(frozen=True)
 class NcvsRequest:
-    dataset: str                 # e.g. "gcuy-rt5g"
-    fmt: str = "json"            # "json" or "csv"
-    where: Optional[str] = None  # Socrata-style $where
+    dataset: str
+    fmt: str = "json"
+    where: Optional[str] = None
     limit: int = DEFAULT_LIMIT
 
 
@@ -31,78 +33,61 @@ def _safe_filename(s: str) -> str:
 
 def _build_url(req: NcvsRequest) -> str:
     resource = f"{req.dataset}.{req.fmt}"
-    params: Dict[str, Any] = {"$limit": int(req.limit)}
+    params: Dict[str, Any] = {"": int(req.limit)}
     if req.where:
-        params["$where"] = req.where
-
+        params[""] = req.where
     qs = urlencode(params, doseq=True)
     return f"{BASE_URL}/{resource}?{qs}"
 
 
 def _get_param(spec: Dict[str, Any], key: str) -> Any:
-    """
-    Helper for legacy spec shape: params may contain $where, $limit, etc.
-    """
     params = spec.get("params")
     if isinstance(params, dict):
         return params.get(key)
     return None
 
 
+def _years_clause(years: Sequence[int]) -> str:
+    vals = ", ".join(str(int(y)) for y in years)
+    return f"year in ({vals})"
+
+
+def _year_min_clause(year_min: int) -> str:
+    return f"year >= {int(year_min)}"
+
+
+def _combine_where(a: Optional[str], b: Optional[str]) -> Optional[str]:
+    if a and b:
+        return f"({a}) AND ({b})"
+    return a or b
+
+
 def _parse_spec_to_request(spec: Dict[str, Any]) -> NcvsRequest:
-    """
-    Accepts both:
-      New shape:
-        dataset, format, where, limit
-      Legacy shape:
-        dataset_id, params: {"$where": "...", "$limit": N}
-    Ignores unrelated fields (series_name, expected_unit, etc).
-    """
-    dataset = spec.get("dataset")
-    if dataset is None:
-        dataset = spec.get("dataset_id")
-
+    dataset = spec.get("dataset") or spec.get("dataset_id")
     if not dataset or not isinstance(dataset, str):
-        raise ValueError("NCVS spec missing required string field: 'dataset' (or legacy 'dataset_id')")
+        raise ValueError("NCVS spec missing required string field: 'dataset'")
 
-    fmt = spec.get("format", None)
-    if fmt is None:
-        fmt = spec.get("fmt", None)
-    if fmt is None:
-        # legacy sometimes implies json
-        fmt = "json"
-
+    fmt = spec.get("format") or spec.get("fmt") or "json"
     if fmt not in ("json", "csv"):
         raise ValueError("NCVS spec 'format' must be 'json' or 'csv'")
 
-    where = spec.get("where")
-    if where is None:
-        where = _get_param(spec, "$where")
+    where = spec.get("where") or _get_param(spec, "")
+    year_min = spec.get("year_min")
+    years = spec.get("years")
 
-    if where is not None and not isinstance(where, str):
-        raise ValueError("NCVS spec 'where' must be a string when provided (or params.$where)")
+    structured_where: Optional[str] = None
+    if year_min is not None:
+        structured_where = _combine_where(structured_where, _year_min_clause(int(year_min)))
+    if years is not None:
+        structured_where = _combine_where(structured_where, _years_clause(years))
 
-    limit = spec.get("limit")
-    if limit is None:
-        limit = _get_param(spec, "$limit")
-    if limit is None:
-        limit = DEFAULT_LIMIT
+    where = _combine_where(where, structured_where)
 
-    if not isinstance(limit, int) or limit <= 0:
-        raise ValueError("NCVS spec 'limit' must be a positive integer (or params.$limit)")
-
-    return NcvsRequest(dataset=dataset, fmt=fmt, where=where, limit=limit)
+    limit = spec.get("limit") or _get_param(spec, "") or DEFAULT_LIMIT
+    return NcvsRequest(dataset=dataset, fmt=fmt, where=where, limit=int(limit))
 
 
 def fetch_ncvs_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -> None:
-    """
-    Fetch NCVS data from the OJP NCVS REST API (api.ojp.gov) and store raw artifact(s).
-
-    Determinism rules:
-    - output file name is derived from dataset + format + where + limit (sanitized)
-    - if output exists and not force: do not overwrite
-    - failures raise exceptions (no sys.exit)
-    """
     req = _parse_spec_to_request(spec)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -112,12 +97,9 @@ def fetch_ncvs_data(spec: Dict[str, Any], output_dir: str, force: bool = False) 
     raw_path = out_dir / fname
 
     if raw_path.exists() and not force:
-        print(f"NCVS raw cache hit: {raw_path}")
         return
 
     url = _build_url(req)
-    print(f"Fetching from {url} ...")
-
     try:
         resp = requests.get(url, timeout=60)
     except requests.RequestException as e:
@@ -128,16 +110,20 @@ def fetch_ncvs_data(spec: Dict[str, Any], output_dir: str, force: bool = False) 
         raise NcvsFetchError(f"HTTP {resp.status_code} fetching {url}: {snippet}")
 
     raw_path.write_bytes(resp.content)
-    print(f"Wrote raw NCVS artifact: {raw_path}")
 
-    if req.fmt == "json":
-        try:
-            data = resp.json()
-            pretty_path = out_dir / (raw_path.name + ".pretty.json")
-            pretty_path.write_text(
-                json.dumps(data, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-            print(f"Wrote pretty JSON: {pretty_path}")
-        except Exception:
-            pass
+    response_sha256 = raw_path.stem
+    receipt = {
+        "source": "bjs_ncvs",
+        "endpoint": req.dataset,
+        "request_url": url,
+        "request_params_redacted": dict(sorted({"": req.limit}.items())),
+        "http_status": resp.status_code,
+        "retry_attempts": 0,
+        "fallback_used": False,
+        "fetched_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "response_sha256": response_sha256,
+        "artifact_path": f"raw/bjs_ncvs/{raw_path.name}",
+    }
+
+    receipt_path = raw_path.parent / f"{response_sha256}.receipt.json"
+    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
