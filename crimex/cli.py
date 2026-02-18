@@ -18,6 +18,7 @@ from crimex.manifest import generate_manifest
 from crimex.validate import validate_facts
 
 from crimex.run import RunContext
+from crimex.verify_run import verify_run
 
 
 def _utc_now_iso() -> str:
@@ -75,7 +76,7 @@ def main():
     validate_parser = subparsers.add_parser("validate", help="Validate facts against schema")
     validate_parser.add_argument("--facts", required=True, help="Path to facts JSONL file")
 
-    # Governed Run command (additive; existing commands unchanged)
+    # Governed Run command (additive)
     run_parser = subparsers.add_parser(
         "run",
         help="Execute a governed run: fetch -> normalize -> report -> validate with artifact hashing",
@@ -108,6 +109,17 @@ def main():
         help="Include explanation text in markdown report",
     )
 
+    # NEW: verify-run command
+    verify_parser = subparsers.add_parser(
+        "verify-run",
+        help="Verify a governed run directory against its run_manifest.json (SHA256 check)",
+    )
+    verify_parser.add_argument(
+        "--run-dir",
+        required=True,
+        help="Path to a run directory containing run_manifest.json",
+    )
+
     args = parser.parse_args()
 
     if args.command == "fetch":
@@ -122,6 +134,8 @@ def main():
         handle_validate(args)
     elif args.command == "run":
         handle_run(args)
+    elif args.command == "verify-run":
+        handle_verify_run(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -197,7 +211,6 @@ def handle_manifest(args):
     root_dir = args.root
     output_file = args.out
 
-    # Construct command string
     command_str = " ".join(sys.argv)
 
     try:
@@ -211,6 +224,20 @@ def handle_validate(args):
     """Handles the validate command."""
     facts_path = args.facts
     validate_facts(facts_path)
+
+
+def handle_verify_run(args):
+    run_dir = Path(args.run_dir)
+    result = verify_run(run_dir)
+
+    if result.ok:
+        print(f"OK: verified {result.checked} artifact(s) in {run_dir}")
+        sys.exit(0)
+
+    print(f"FAIL: verification failed for {run_dir}", file=sys.stderr)
+    for err in result.errors:
+        print(f" - {err}", file=sys.stderr)
+    sys.exit(1)
 
 
 def handle_run(args):
@@ -232,7 +259,6 @@ def handle_run(args):
     offline = args.offline
     explain = args.explain
 
-    # Read spec first (fail loud, before run creation)
     print(f"Reading spec from {spec_path} ...")
     try:
         spec = read_json(spec_path)
@@ -245,7 +271,6 @@ def handle_run(args):
         print("Error: Spec missing 'source' field", file=sys.stderr)
         sys.exit(1)
 
-    # Create governed run directory early so failures are captured
     try:
         run = RunContext(
             base_out=out_base,
@@ -264,7 +289,6 @@ def handle_run(args):
         f"spec_path={spec_path} out_base={out_base} overwrite={overwrite} force={force} offline={offline}",
     )
 
-    # Paths inside run
     raw_source_dir = run.raw_dir() / source
     facts_path = run.facts_dir() / "facts.jsonl"
     reports_dir = run.reports_dir()
@@ -273,7 +297,6 @@ def handle_run(args):
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     def _finalize_and_exit(exit_code: int) -> None:
-        # Try to hash what exists; do not block manifest creation on hashing hiccups
         try:
             run.register_tree(run.raw_dir())
         except Exception as e:
@@ -295,8 +318,7 @@ def handle_run(args):
         try:
             if log_path.exists():
                 run.register_artifact(log_path)
-        except Exception as e:
-            # last resort; still attempt manifest
+        except Exception:
             pass
 
         try:
@@ -308,7 +330,6 @@ def handle_run(args):
         print(f"Run complete: {run.path}")
         sys.exit(exit_code)
 
-    # Fetch (unless offline)
     if offline:
         _append_log(log_path, "OFFLINE mode enabled: skipping fetch.")
         if not _dir_has_files(raw_source_dir):
@@ -327,13 +348,11 @@ def handle_run(args):
                 print(f"Error: Unknown source '{source}'", file=sys.stderr)
                 _finalize_and_exit(1)
         except BaseException as e:
-            # Catch SystemExit from connectors as well
             _append_log(log_path, f"ERROR during fetch: {type(e).__name__}: {e}")
             print(f"Error during fetch: {e}", file=sys.stderr)
             _finalize_and_exit(1)
         _append_log(log_path, "FETCH end")
 
-    # Normalize
     _append_log(log_path, "NORMALIZE begin")
     try:
         normalize_all(str(run.raw_dir()), str(facts_path))
@@ -343,7 +362,6 @@ def handle_run(args):
         _finalize_and_exit(1)
     _append_log(log_path, "NORMALIZE end")
 
-    # Report
     _append_log(log_path, "REPORT begin")
     try:
         facts = read_jsonl(str(facts_path))
@@ -359,7 +377,6 @@ def handle_run(args):
         _finalize_and_exit(1)
     _append_log(log_path, "REPORT end")
 
-    # Validate
     _append_log(log_path, "VALIDATE begin")
     try:
         validate_facts(str(facts_path))
