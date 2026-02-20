@@ -106,6 +106,9 @@ exclude = ["specs*", "schemas*", "tests*"]
 minversion = "7.0"
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "timeout: test timeout marker",
+]
 filterwarnings = [
   # Keep the output readable; remove these if you want warnings to fail CI
   "ignore::DeprecationWarning:pydantic.*",
