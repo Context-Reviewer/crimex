@@ -3,6 +3,7 @@
 FBI Crime Data Explorer (CDE) connector.
 Fetches data from the FBI CDE API.
 """
+
 from __future__ import annotations
 
 import json
@@ -10,7 +11,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import requests
 
@@ -42,7 +43,7 @@ def _resolve_cache_dir(output_dir: str) -> Path:
     return base / "raw" / "fbi_cde"
 
 
-def _try_read_cache(cache_file: Path, meta_file: Path, spec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _try_read_cache(cache_file: Path, meta_file: Path, spec: dict[str, Any]) -> dict[str, Any] | None:
     if cache_file.exists():
         if not meta_file.exists():
             write_json(spec, str(meta_file))
@@ -55,7 +56,7 @@ def _write_receipt(
     source: str,
     endpoint: str,
     request_url: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     http_status: int,
     retry_attempts: int,
     fallback_used: bool,
@@ -82,7 +83,7 @@ def _write_receipt(
     receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -> Dict[str, Any]:
+def fetch_fbi_data(spec: dict[str, Any], output_dir: str, force: bool = False) -> dict[str, Any]:
     endpoint = spec.get("endpoint")
     if not endpoint or not isinstance(endpoint, str):
         raise FbiFetchError("Spec missing required string field: 'endpoint'")
@@ -122,7 +123,7 @@ def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -
         if cached is not None:
             return cached
 
-    last_error: Optional[str] = None
+    last_error: str | None = None
     attempts = 1 + len(RETRY_DELAYS)
 
     for i in range(attempts):
@@ -165,5 +166,3 @@ def fetch_fbi_data(spec: Dict[str, Any], output_dir: str, force: bool = False) -
             return cached
 
     raise FbiFetchError(last_error or "Unknown fetch failure")
-
-

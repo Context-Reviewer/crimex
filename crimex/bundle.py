@@ -2,8 +2,7 @@ import hashlib
 import json
 import zipfile
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-
+from typing import Any
 
 FIXED_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
@@ -30,7 +29,7 @@ def _zipinfo_for_path(arc_path: str) -> zipfile.ZipInfo:
     return zi
 
 
-def _read_manifest_obj(run_dir: Path) -> Dict[str, Any]:
+def _read_manifest_obj(run_dir: Path) -> dict[str, Any]:
     manifest_path = run_dir / "run_manifest.json"
     try:
         obj = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -47,7 +46,7 @@ def _read_manifest_obj(run_dir: Path) -> Dict[str, Any]:
     return obj
 
 
-def _serialize_manifest(obj: Dict[str, Any]) -> bytes:
+def _serialize_manifest(obj: dict[str, Any]) -> bytes:
     return (json.dumps(obj, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
@@ -62,7 +61,7 @@ def _update_governed_manifest_artifacts(run_dir: Path, bundle_sha256: str) -> No
 
 
 def _resolve_facts_path(run_dir: Path) -> Path:
-    candidates_checked: List[str] = []
+    candidates_checked: list[str] = []
 
     p1 = run_dir / "facts" / "facts.jsonl"
     candidates_checked.append(str(p1))
@@ -78,8 +77,7 @@ def _resolve_facts_path(run_dir: Path) -> Path:
         if len(jsonl_files) > 1:
             names = ", ".join(p.name for p in jsonl_files)
             raise BundleError(
-                "Ambiguous facts location: multiple .jsonl files under facts/: "
-                f"{names}. Expected exactly one."
+                f"Ambiguous facts location: multiple .jsonl files under facts/: {names}. Expected exactly one."
             )
 
     p2 = run_dir / "facts.jsonl"
@@ -95,11 +93,7 @@ def _resolve_facts_path(run_dir: Path) -> Path:
     else:
         facts_dir_state = "facts/ directory missing"
 
-    raise BundleError(
-        "Facts file not found. Checked: "
-        + "; ".join(candidates_checked)
-        + f". {facts_dir_state}"
-    )
+    raise BundleError("Facts file not found. Checked: " + "; ".join(candidates_checked) + f". {facts_dir_state}")
 
 
 def _validate_run_structure(run_dir: Path, facts_path: Path) -> None:
@@ -115,8 +109,8 @@ def _validate_run_structure(run_dir: Path, facts_path: Path) -> None:
             raise BundleError(f"Required path missing: {p}")
 
 
-def _collect_files_excluding_manifest_and_facts(run_dir: Path, facts_path: Path) -> List[Path]:
-    files: List[Path] = []
+def _collect_files_excluding_manifest_and_facts(run_dir: Path, facts_path: Path) -> list[Path]:
+    files: list[Path] = []
 
     for base in ["raw", "reports"]:
         base_path = run_dir / base

@@ -1,55 +1,53 @@
-"""
-CSV Reporting module.
-"""
 import csv
-import json
-import os
-from typing import List, Dict, Any, Set
-from crimex.schemas import Fact
+from typing import Any
 
-def write_facts_to_csv(facts: List[Dict[str, Any]], output_file: str) -> None:
+
+def write_facts_to_csv(facts: list[dict[str, Any]], output_file: str) -> None:
     """
-    Writes a list of facts (as dicts) to a CSV file.
-    Flattens dimensions into columns.
+    Writes facts to a CSV file with deterministic column ordering.
     """
     if not facts:
-        print("No facts to report.")
+        # Write just headers if no facts
+        with open(output_file, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["source", "series", "geo", "period", "value", "unit", "denominator", "dimensions"])
         return
 
-    # Identify all dimension keys
-    dim_keys: Set[str] = set()
+    # Determine all possible dimension keys
+    dim_keys: set[str] = set()
     for fact in facts:
-        dims = fact.get("dimensions", {})
-        if dims:
+        dims = fact.get("dimensions") or {}
+        if isinstance(dims, dict):
             dim_keys.update(dims.keys())
-            
-    sorted_dim_keys = sorted(list(dim_keys))
-    
+
+    sorted_dim_keys = sorted(dim_keys)
+
     # Define CSV headers
-    # Standard fields first
-    headers = [
-        "source", "series", "geo", "period", "value", "unit", "denominator",
-        "ci_lower", "ci_upper", "se", "notes", "query_fingerprint", "retrieved_at"
+    headers = ["source", "series", "geo", "period", "value", "unit", "denominator"] + [
+        f"dim_{k}" for k in sorted_dim_keys
     ]
-    
-    # Add dimension columns
-    headers.extend([f"dim_{k}" for k in sorted_dim_keys])
-    
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    
+
+    # Deterministic sort of rows
+    facts_sorted = sorted(
+        facts,
+        key=lambda f: (
+            f.get("source", ""),
+            f.get("series", ""),
+            f.get("geo", ""),
+            f.get("period", ""),
+            f.get("unit", ""),
+        ),
+    )
+
     with open(output_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=headers)
         writer.writeheader()
-        
-        for fact in facts:
-            # Flatten fact for CSV
-            row = {k: fact.get(k) for k in headers if not k.startswith("dim_")}
-            
-            # Add dimensions
-            dims = fact.get("dimensions", {})
-            for k in sorted_dim_keys:
-                row[f"dim_{k}"] = dims.get(k, "")
-                
+        for fact in facts_sorted:
+            row: dict[str, Any] = {
+                k: fact.get(k) for k in ["source", "series", "geo", "period", "value", "unit", "denominator"]
+            }
+            dims = fact.get("dimensions") or {}
+            if isinstance(dims, dict):
+                for k in sorted_dim_keys:
+                    row[f"dim_{k}"] = dims.get(k)
             writer.writerow(row)
-            
-    print(f"Wrote CSV report to {output_file}")

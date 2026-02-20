@@ -2,7 +2,7 @@ import json
 import zipfile
 from pathlib import Path
 
-from crimex.bundle import create_bundle, bundle_content_fingerprint
+from crimex.bundle import bundle_content_fingerprint, create_bundle
 
 
 def _create_minimal_run(tmp_path: Path) -> Path:

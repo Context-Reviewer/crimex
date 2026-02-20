@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 
 class QAError(Exception):
@@ -18,7 +18,7 @@ REQUIRED_FIELDS = {
 }
 
 
-def _normalize_dimensions(dimensions: Any) -> Tuple[Tuple[str, Any], ...]:
+def _normalize_dimensions(dimensions: Any) -> tuple[tuple[str, Any], ...]:
     if dimensions is None:
         return tuple()
     if isinstance(dimensions, dict):
@@ -26,11 +26,11 @@ def _normalize_dimensions(dimensions: Any) -> Tuple[Tuple[str, Any], ...]:
     return tuple()
 
 
-def validate_run_facts(run_dir: Path) -> List[str]:
+def validate_run_facts(run_dir: Path) -> list[str]:
     run_dir = Path(run_dir).resolve()
     facts_path = run_dir / "facts" / "facts.jsonl"
 
-    errors: List[str] = []
+    errors: list[str] = []
 
     if not facts_path.exists():
         errors.append("MISSING_FACTS_FILE: facts/facts.jsonl not found")
@@ -38,7 +38,7 @@ def validate_run_facts(run_dir: Path) -> List[str]:
         return errors
 
     seen_keys = set()
-    units_by_series: Dict[Tuple[str, str], set] = {}
+    units_by_series: dict[tuple[str, str], set] = {}
     valid_rows = 0
 
     try:
@@ -87,16 +87,12 @@ def validate_run_facts(run_dir: Path) -> List[str]:
             _normalize_dimensions(dimensions),
         )
         if key in seen_keys:
-            errors.append(
-                f"DUPLICATE_FACT: source={source} series={series} geo={geo} period={period}"
-            )
+            errors.append(f"DUPLICATE_FACT: source={source} series={series} geo={geo} period={period}")
         else:
             seen_keys.add(key)
 
         # Negative value check
-        if isinstance(unit, str) and (
-            unit == "count" or unit.startswith("rate")
-        ):
+        if isinstance(unit, str) and (unit == "count" or unit.startswith("rate")):
             try:
                 if value is None or float(value) < 0:
                     errors.append(
@@ -110,9 +106,7 @@ def validate_run_facts(run_dir: Path) -> List[str]:
         # Denominator consistency
         if isinstance(unit, str) and unit.startswith("rate"):
             if denominator is None:
-                errors.append(
-                    f"MISSING_DENOMINATOR: source={source} series={series} geo={geo} period={period}"
-                )
+                errors.append(f"MISSING_DENOMINATOR: source={source} series={series} geo={geo} period={period}")
 
         # Unit consistency tracking
         if source is not None and series is not None and unit is not None:

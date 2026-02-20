@@ -3,18 +3,17 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
 _SECRET_KEYS = {"api_key", "apikey", "token", "authorization"}
 
 
 def utc_now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 class Receipt(BaseModel):
@@ -41,7 +40,7 @@ class Receipt(BaseModel):
     @field_validator("request_params_redacted")
     @classmethod
     def validate_no_secrets(cls, v: dict[str, Any]) -> dict[str, Any]:
-        for key in v.keys():
+        for key in v:
             if key.lower() in _SECRET_KEYS:
                 raise ValueError(f"request_params_redacted must not contain secret key: {key}")
         return v

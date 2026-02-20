@@ -5,10 +5,10 @@ import json
 import platform
 import shutil
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable
 
 
 def _utc_now_iso() -> str:
@@ -45,7 +45,7 @@ class RunContext:
     crimex_version: str = "0.1.1"
 
     path: Path = field(init=False)
-    _artifacts: Dict[str, str] = field(default_factory=dict, init=False)
+    _artifacts: dict[str, str] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         self.base_out = Path(self.base_out)
@@ -58,9 +58,7 @@ class RunContext:
 
         if self.path.exists():
             if not self.overwrite:
-                raise FileExistsError(
-                    f"Run directory already exists: {self.path}. Use --overwrite to replace."
-                )
+                raise FileExistsError(f"Run directory already exists: {self.path}. Use --overwrite to replace.")
             # True overwrite: wipe and recreate
             shutil.rmtree(self.path)
 

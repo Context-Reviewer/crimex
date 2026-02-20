@@ -1,9 +1,12 @@
 """
 Tests for schemas module.
 """
+
 import pytest
-from crimex.schemas import Fact, QuerySpec
 from pydantic import ValidationError
+
+from crimex.schemas import Fact, QuerySpec
+
 
 def test_fact_valid():
     """Test valid Fact."""
@@ -14,10 +17,11 @@ def test_fact_valid():
         period=2020,
         value=100.5,
         unit="count",
-        query_fingerprint="abc"
+        query_fingerprint="abc",
     )
     assert fact.value == 100.5
     assert fact.retrieved_at is not None
+
 
 def test_fact_invalid_missing_field():
     """Test Fact validation fails on missing required field."""
@@ -29,14 +33,11 @@ def test_fact_invalid_missing_field():
             period=2020,
             value=100.5,
             unit="count",
-            query_fingerprint="abc"
+            query_fingerprint="abc",
         )
+
 
 def test_query_spec_valid():
     """Test valid QuerySpec."""
-    spec = QuerySpec(
-        source="fbi_cde",
-        endpoint="some/api",
-        series_name="test_series"
-    )
+    spec = QuerySpec(source="fbi_cde", endpoint="some/api", series_name="test_series")
     assert spec.source == "fbi_cde"

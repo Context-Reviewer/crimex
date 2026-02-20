@@ -1,28 +1,27 @@
 """
 Command-line interface for crimex.
 """
+
 import argparse
-import sys
 import os
-from pathlib import Path
+import sys
 from datetime import datetime, timezone
-from typing import Any, Dict, cast
+from pathlib import Path
+from typing import Any, cast
 
 from crimex import __version__
-from crimex.io import read_json, ensure_directory, read_jsonl
-from crimex.connectors.fbi_cde import fetch_fbi_data
+from crimex.bundle import BundleError, create_bundle
 from crimex.connectors.bjs_ncvs import fetch_ncvs_data
+from crimex.connectors.fbi_cde import fetch_fbi_data
+from crimex.io import ensure_directory, read_json, read_jsonl
+from crimex.manifest import generate_manifest
 from crimex.normalize.common import normalize_all
+from crimex.qa import validate_run_facts
 from crimex.report.csv_out import write_facts_to_csv
 from crimex.report.markdown import write_facts_to_markdown
-from crimex.manifest import generate_manifest
-from crimex.validate import validate_facts
-
 from crimex.run import RunContext
+from crimex.validate import validate_facts
 from crimex.verify_run import verify_run
-
-from crimex.bundle import create_bundle, BundleError
-from crimex.qa import validate_run_facts
 
 
 def _utc_now_iso() -> str:
@@ -41,11 +40,11 @@ def _dir_has_files(p: Path) -> bool:
     return any(x.is_file() for x in p.rglob("*"))
 
 
-def _read_spec_dict(spec_path: str) -> Dict[str, Any]:
+def _read_spec_dict(spec_path: str) -> dict[str, Any]:
     obj = read_json(spec_path)
     if not isinstance(obj, dict):
         raise ValueError("Spec JSON must be an object (dictionary) at the top level")
-    return cast(Dict[str, Any], obj)
+    return cast(dict[str, Any], obj)
 
 
 def main():
@@ -399,7 +398,10 @@ def handle_run(args):
         _append_log(log_path, "OFFLINE mode enabled: skipping fetch.")
         if not _dir_has_files(raw_source_dir):
             _append_log(log_path, f"ERROR: offline mode requires existing raw data under {raw_source_dir}")
-            print(f"Error: offline mode requires existing raw data under {raw_source_dir}", file=sys.stderr)
+            print(
+                f"Error: offline mode requires existing raw data under {raw_source_dir}",
+                file=sys.stderr,
+            )
             _finalize_and_exit(1)
     else:
         _append_log(log_path, "FETCH begin")

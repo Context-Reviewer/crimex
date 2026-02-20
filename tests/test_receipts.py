@@ -10,15 +10,8 @@ from pydantic import ValidationError
 import crimex.receipt as receipt_mod
 
 
-class _FrozenDatetime:
-    @classmethod
-    def utcnow(cls):
-        from datetime import datetime
-        return datetime(2026, 2, 17, 15, 4, 12)
-
-
 def test_receipt_build_is_deterministic_and_secret_free(monkeypatch):
-    monkeypatch.setattr(receipt_mod, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(receipt_mod, "utc_now_iso", lambda: "2026-02-17T15:04:12Z")
 
     r1 = receipt_mod.build_receipt(
         source="fbi_cde",
@@ -72,7 +65,7 @@ def test_receipt_rejects_secret_key_in_redacted_params():
 
 
 def test_write_receipt_creates_source_scoped_sidecar(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(receipt_mod, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(receipt_mod, "utc_now_iso", lambda: "2026-02-17T15:04:12Z")
 
     receipt = receipt_mod.build_receipt(
         source="ncvs",

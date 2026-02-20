@@ -4,7 +4,6 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
 
 
 def _sha256_file(path: Path) -> str:
@@ -18,14 +17,14 @@ def _sha256_file(path: Path) -> str:
 @dataclass
 class VerifyResult:
     ok: bool
-    errors: List[str]
+    errors: list[str]
     checked: int
 
 
 def verify_run(run_dir: Path) -> VerifyResult:
     run_dir = Path(run_dir)
     manifest_path = run_dir / "run_manifest.json"
-    errors: List[str] = []
+    errors: list[str] = []
 
     if not manifest_path.exists():
         return VerifyResult(
@@ -43,7 +42,7 @@ def verify_run(run_dir: Path) -> VerifyResult:
             checked=0,
         )
 
-    artifacts: Dict[str, str] = manifest.get("artifacts") or {}
+    artifacts: dict[str, str] = manifest.get("artifacts") or {}
     if not isinstance(artifacts, dict):
         return VerifyResult(
             ok=False,
@@ -72,8 +71,6 @@ def verify_run(run_dir: Path) -> VerifyResult:
 
         actual_hash = _sha256_file(artifact_path)
         if actual_hash != expected_hash:
-            errors.append(
-                f"Hash mismatch: {rel_path} expected={expected_hash} actual={actual_hash}"
-            )
+            errors.append(f"Hash mismatch: {rel_path} expected={expected_hash} actual={actual_hash}")
 
     return VerifyResult(ok=(len(errors) == 0), errors=errors, checked=checked)

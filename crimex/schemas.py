@@ -6,7 +6,7 @@ Defines Fact, QuerySpec, and RunManifest models.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -30,15 +30,15 @@ class Fact(BaseModel):
     period: int = Field(..., description="The year or period of the data (e.g., 2020)")
     value: float = Field(..., description="The measured value")
     unit: str = Field(..., description="The unit of the value (e.g., count, rate_per_100k)")
-    denominator: Optional[float] = Field(None, description="The population or base used for rates (if applicable)")
-    dimensions: Dict[str, Any] = Field(
-        default_factory=dict, description="Additional dimensions (e.g., race, age, sex)"
+    denominator: float | None = Field(None, description="The population or base used for rates (if applicable)")
+    dimensions: dict[str, Any] = Field(default_factory=dict, description="Additional dimensions (e.g., race, age, sex)")
+    ci_lower: float | None = Field(None, description="Confidence interval lower bound")
+    ci_upper: float | None = Field(None, description="Confidence interval upper bound")
+    se: float | None = Field(None, description="Standard error")
+    notes: str | None = Field(None, description="Any notes or caveats about this data point")
+    retrieved_at: datetime = Field(
+        default_factory=utc_now, description="Timestamp when this fact was retrieved/processed"
     )
-    ci_lower: Optional[float] = Field(None, description="Confidence interval lower bound")
-    ci_upper: Optional[float] = Field(None, description="Confidence interval upper bound")
-    se: Optional[float] = Field(None, description="Standard error")
-    notes: Optional[str] = Field(None, description="Any notes or caveats about this data point")
-    retrieved_at: datetime = Field(default_factory=utc_now, description="Timestamp when this fact was retrieved/processed")
     query_fingerprint: str = Field(..., description="Hash of the query/spec used to generate this fact")
 
 
@@ -50,14 +50,14 @@ class QuerySpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str = Field(..., description="Source system: 'fbi_cde' or 'bjs_ncvs'")
-    endpoint: Optional[str] = Field(None, description="API endpoint path (e.g., /api/data/...)")
-    dataset_id: Optional[str] = Field(None, description="Dataset ID for BJS/SODA (e.g., 'ncvs-2020')")
-    params: Dict[str, Any] = Field(default_factory=dict, description="Query parameters for the API call")
+    endpoint: str | None = Field(None, description="API endpoint path (e.g., /api/data/...)")
+    dataset_id: str | None = Field(None, description="Dataset ID for BJS/SODA (e.g., 'ncvs-2020')")
+    params: dict[str, Any] = Field(default_factory=dict, description="Query parameters for the API call")
     series_name: str = Field(..., description="Name for the resulting series")
-    notes: Optional[str] = Field(None, description="Notes about what this query fetches")
-    expected_unit: Optional[str] = Field(None, description="Expected unit of the result (for validation)")
-    expected_denominator: Optional[float] = Field(None, description="Expected denominator (if constant)")
-    download_url: Optional[str] = Field(None, description="Fallback URL for direct download if API fails (NCVS)")
+    notes: str | None = Field(None, description="Notes about what this query fetches")
+    expected_unit: str | None = Field(None, description="Expected unit of the result (for validation)")
+    expected_denominator: float | None = Field(None, description="Expected denominator (if constant)")
+    download_url: str | None = Field(None, description="Fallback URL for direct download if API fails (NCVS)")
 
 
 class ManifestEntry(BaseModel):
@@ -79,7 +79,7 @@ class RunManifest(BaseModel):
     run_id: str = Field(..., description="Unique ID for the run (e.g., timestamp + hash)")
     timestamp: datetime = Field(default_factory=utc_now, description="Run timestamp")
     command: str = Field(..., description="The command that triggered this run")
-    artifacts: List[ManifestEntry] = Field(default_factory=list, description="List of artifacts created")
+    artifacts: list[ManifestEntry] = Field(default_factory=list, description="List of artifacts created")
 
 
 def generate_json_schemas(output_dir: str) -> None:

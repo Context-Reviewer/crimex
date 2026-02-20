@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+
 from crimex.qa import validate_run_facts
 
 
@@ -109,8 +110,22 @@ def test_malformed_json(tmp_path):
 
 
 def test_deterministic_ordering(tmp_path):
-    bad1 = {"source": "s", "series": "x", "geo": "US", "period": "2020", "unit": "count", "value": -1}
-    bad2 = {"source": "s", "series": "x", "geo": "US", "period": "2020", "unit": "rate_per_100k", "value": 1}
+    bad1 = {
+        "source": "s",
+        "series": "x",
+        "geo": "US",
+        "period": "2020",
+        "unit": "count",
+        "value": -1,
+    }
+    bad2 = {
+        "source": "s",
+        "series": "x",
+        "geo": "US",
+        "period": "2020",
+        "unit": "rate_per_100k",
+        "value": 1,
+    }
     run = _make_run(tmp_path, [json.dumps(bad1), json.dumps(bad2)])
     errors = validate_run_facts(run)
     assert errors == sorted(errors)
