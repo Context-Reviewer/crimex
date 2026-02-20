@@ -5,6 +5,7 @@
 Define the "smallest successful governed run" as an end-to-end, offline, deterministic smoke that exercises the full governance chain. It must:
 
 - Be offline (no network I/O)
+- "Offline" means the run must succeed with network access disabled, provided fixtures are present and correctly staged.
 - Be deterministic (fixtures and outputs are stable)
 - Require `verify-run`
 - Require `bundle`
@@ -20,6 +21,8 @@ Define the "smallest successful governed run" as an end-to-end, offline, determi
 **Canonical Smoke Procedure**
 
 Clean and stage fixtures (note: `output/` is a runtime-only directory and is ignored by git):
+
+Fixtures are staged into the run directory before `fetch` so the connector resolves a cache hit and performs zero network access.
 
 ```powershell
 $RunDir = Join-Path $PWD "output\smoke_run"
@@ -65,6 +68,7 @@ Copy-Item -Force (Join-Path $RunDir "run_bundle.zip") (Join-Path $BundleDir "run
 **Deterministic Postconditions**
 
 - `verify-run` exits 0 and verifies all manifest artifacts
+- The manifest hash must remain stable across repeated smoke runs when fixtures are unchanged
 - `run_bundle.zip` exists and is non-empty
 - No network calls are required; smoke should succeed with no internet connectivity as long as fixtures are present
 
