@@ -1,0 +1,11 @@
+{
+  "endpoint": "/smoke/offline",
+  "params": {
+    "state": "US"
+  },
+  "query_fingerprint": "smoke-fixture",
+  "retrieved_at": "2026-02-17T15:04:12Z",
+  "series_name": "violent_crime",
+  "source": "fbi_cde",
+  "unit": "count"
+}

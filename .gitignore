@@ -6,3 +6,6 @@ data/
 out/
 .env
 *.egg-info/
+# Runtime artifacts
+output/
+

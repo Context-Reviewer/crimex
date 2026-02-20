@@ -1,0 +1,10 @@
+{
+  "endpoint": "/smoke/offline",
+  "expected_unit": "count",
+  "notes": "Offline smoke spec using local fixtures",
+  "params": {
+    "state": "US"
+  },
+  "series_name": "violent_crime",
+  "source": "fbi_cde"
+}

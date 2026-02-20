@@ -1,0 +1,14 @@
+{
+  "artifact_path": "raw/fbi_cde/f46dd1375868738883737d153d4df6ee6620be5a663b982c5974862bc2dcca4e.json",
+  "endpoint": "/smoke/offline",
+  "fallback_used": false,
+  "fetched_at": "2026-02-17T15:04:12Z",
+  "http_status": 200,
+  "request_params_redacted": {
+    "state": "US"
+  },
+  "request_url": "https://api.usa.gov/crime/fbi/cde/smoke/offline",
+  "response_sha256": "f46dd1375868738883737d153d4df6ee6620be5a663b982c5974862bc2dcca4e",
+  "retry_attempts": 0,
+  "source": "fbi_cde"
+}
