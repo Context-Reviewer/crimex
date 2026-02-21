@@ -66,7 +66,6 @@ def _json_dumps(obj: Any) -> str:
 
 def _iter_files_sorted(root: Path) -> Iterable[Path]:
     # Deterministic traversal: sort directories and files lexicographically.
-    # Exclude common noise (but keep conservative; run_dir should be clean anyway).
     if not root.exists():
         return []
     all_paths: list[Path] = []
@@ -88,7 +87,6 @@ def _build_tree(root: Path) -> dict[str, Any]:
         cur = tree
         for i, part in enumerate(parts):
             children = cur.setdefault("children", [])
-            # find existing
             found = None
             for ch in children:
                 if ch["name"] == part:
@@ -100,7 +98,7 @@ def _build_tree(root: Path) -> dict[str, Any]:
                 if node_type == "dir":
                     found["children"] = []
                 children.append(found)
-                # keep children sorted deterministically
+                # keep children sorted deterministically: dirs first, then files; name lexicographic
                 children.sort(key=lambda n: (n["type"] != "dir", n["name"]))
             cur = found
 
@@ -125,7 +123,6 @@ def _count_jsonl_lines(path: Path, *, max_bytes: int = 5_000_000) -> dict[str, A
     if len(data) > max_bytes:
         data = data[:max_bytes]
         truncated = True
-    # Count non-empty lines
     text = data.decode("utf-8", errors="replace")
     records = sum(1 for line in text.splitlines() if line.strip())
     return {"exists": True, "records": records, "truncated": truncated}
@@ -154,7 +151,6 @@ def _summarize_text(s: str, *, max_chars: int = 240) -> str:
 def _run_cli(argv: list[str], *, timeout_s: float) -> dict[str, Any]:
     """
     Run `python -m crimex.cli ...` deterministically and return a small summary.
-    This is read-only with respect to run_dir, but the called commands might read files.
     """
     t0 = _now_monotonic_ms()
     try:
@@ -195,15 +191,30 @@ def _run_cli(argv: list[str], *, timeout_s: float) -> dict[str, Any]:
 
 
 def _status_from_run_result(res: dict[str, Any]) -> tuple[str, str]:
-    """
-    Map _run_cli result to status + summary string deterministically.
-    """
     if res.get("ok") is True:
         summary = res.get("stdout_1") or res.get("stderr_1") or ""
         return "PASS", summary
-    # FAIL path
     summary = res.get("stderr_1") or res.get("stdout_1") or ""
     return "FAIL", summary
+
+
+def _count_files(tree: dict[str, Any]) -> int:
+    if tree.get("type") == "file":
+        return 1
+    total = 0
+    for ch in tree.get("children", []):
+        total += _count_files(ch)
+    return total
+
+
+def _pick_free_port(host: str) -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        return int(s.getsockname()[1])
+
+
+def _as_posix_rel(base: Path, p: Path) -> str:
+    return p.relative_to(base).as_posix()
 
 
 # ----------------------------
@@ -216,7 +227,7 @@ INDEX_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>crimex UI (Phase 0) - Run Viewer</title>
+  <title>crimex UI (Phase 1B) - Run Viewer</title>
   <style>
     :root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
     body { margin: 0; padding: 0; background: #0b0d10; color: #e9eef5; }
@@ -225,8 +236,7 @@ INDEX_HTML = """<!doctype html>
     header .sub { margin-top: 6px; font-size: 12px; color: #a9b6c6; }
     main { display: grid; grid-template-columns: 360px 1fr; gap: 14px; padding: 14px; }
     .card { background: #0f1319; border: 1px solid #1c2430; border-radius: 10px; overflow: hidden; }
-    .card h2 { margin: 0; padding: 10px 12px; font-size: 13px; border-bottom: 1px solid #1c2430; }
-    .card h2 { color: #cfe0f5; }
+    .card h2 { margin: 0; padding: 10px 12px; font-size: 13px; border-bottom: 1px solid #1c2430; color: #cfe0f5; }
     .card .body { padding: 10px 12px; font-size: 12px; color: #d7e0eb; }
     .kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 10px; }
     .k { color: #9fb0c4; }
@@ -239,12 +249,33 @@ INDEX_HTML = """<!doctype html>
     pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
     .viewer { max-height: 74vh; overflow: auto; }
     .muted { color: #a9b6c6; }
-    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; }
-    .pill { border: 1px solid #1c2430; background: #0b0d10; font-size: 11px; }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid #1c2430;
+      background: #0b0d10;
+      font-size: 11px;
+    }
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    button { background:#132033; border:1px solid #1c2430; color:#e9eef5; }
-    button { border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer; }
+    button {
+      background:#132033;
+      border:1px solid #1c2430;
+      color:#e9eef5;
+      border-radius:8px;
+      padding:6px 10px;
+      font-size:12px;
+      cursor:pointer;
+    }
     button:hover { border-color:#2b7cff; }
+    select {
+      background:#0b0d10;
+      border:1px solid #1c2430;
+      color:#e9eef5;
+      border-radius:8px;
+      padding:6px 10px;
+      font-size:12px;
+    }
     a { color: #9cc4ff; }
 
     .statusgrid { display:grid; grid-template-columns: 1fr; gap: 8px; }
@@ -258,23 +289,29 @@ INDEX_HTML = """<!doctype html>
 </head>
 <body>
 <header>
-  <h1>crimex UI (Phase 0) - Run Viewer</h1>
+  <h1>crimex UI (Phase 1B) - Run Viewer</h1>
   <div class="sub">
     Read-only. Deterministic listings. No writes to run directory.
+    <span class="pill mono" id="baseDirPill"></span>
     <span class="pill mono" id="runDirPill"></span>
   </div>
 </header>
 
 <main>
   <section class="card">
-    <h2>Run Summary</h2>
+    <h2>Run Selector</h2>
     <div class="body">
-      <div class="kv" id="summaryKv"></div>
+      <div class="row">
+        <select id="runSelect"></select>
+        <button id="reloadRunsBtn">Reload</button>
+      </div>
       <div style="height:10px"></div>
       <div class="row">
-        <button id="refreshBtn">Refresh</button>
+        <button id="refreshBtn">Refresh view</button>
         <span class="muted" id="statusText"></span>
       </div>
+      <div style="height:10px"></div>
+      <div class="kv" id="summaryKv"></div>
     </div>
   </section>
 
@@ -316,6 +353,18 @@ INDEX_HTML = """<!doctype html>
 
 <script>
   const $ = (id) => document.getElementById(id);
+
+  function getSelectedRun() {
+    const el = $("runSelect");
+    return el && el.value ? el.value : "";
+  }
+
+  function withRun(path) {
+    const run = getSelectedRun();
+    if (!run) return path;
+    const sep = path.includes("?") ? "&" : "?";
+    return `${path}${sep}run=${encodeURIComponent(run)}`;
+  }
 
   async function api(path) {
     const r = await fetch(path, {cache:"no-store"});
@@ -406,7 +455,7 @@ INDEX_HTML = """<!doctype html>
         $("statusText").textContent = "Loading file...";
         try {
           const q = encodeURIComponent(curPath);
-          const data = await api(`/api/file?path=${q}`);
+          const data = await api(withRun(`/api/file?path=${q}`));
           $("filePath").textContent = data.path;
           $("filePre").textContent = data.content;
         } catch (e) {
@@ -420,10 +469,46 @@ INDEX_HTML = """<!doctype html>
     }
   }
 
+  async function loadRuns() {
+    $("statusText").textContent = "Loading runs...";
+    try {
+      const data = await api("/api/runs");
+      $("baseDirPill").textContent = data.base_dir || "";
+      const runs = data.runs || [];
+      const sel = $("runSelect");
+      const prev = sel.value || "";
+      sel.innerHTML = "";
+
+      // Always include default
+      const opt0 = document.createElement("option");
+      opt0.value = "";
+      opt0.textContent = "(default run_dir)";
+      sel.appendChild(opt0);
+
+      for (const r of runs) {
+        const opt = document.createElement("option");
+        opt.value = r.run || "";
+        opt.textContent = r.run || "";
+        sel.appendChild(opt);
+      }
+
+      // restore selection if still present
+      const values = new Set(Array.from(sel.options).map(o => o.value));
+      if (values.has(prev)) sel.value = prev;
+      else sel.value = "";
+
+      $("statusText").textContent = "";
+    } catch (e) {
+      $("statusText").textContent = `ERROR: ${e}`;
+    } finally {
+      setTimeout(() => { $("statusText").textContent = ""; }, 800);
+    }
+  }
+
   async function refreshSummaryAndTree() {
     $("statusText").textContent = "Refreshing...";
     try {
-      const summary = await api("/api/run/summary");
+      const summary = await api(withRun("/api/run/summary"));
       $("runDirPill").textContent = summary.run_dir;
       renderKv({
         "run_dir": summary.run_dir,
@@ -438,7 +523,7 @@ INDEX_HTML = """<!doctype html>
 
       $("manifestPre").textContent = summary.manifest.pretty || "(no manifest)";
 
-      const tree = await api("/api/tree");
+      const tree = await api(withRun("/api/tree"));
       const host = $("treeHost");
       host.innerHTML = "";
       host.appendChild(renderTreeNode(tree, ""));
@@ -452,7 +537,7 @@ INDEX_HTML = """<!doctype html>
   async function refreshStatus() {
     $("govMeta").textContent = "Running...";
     try {
-      const st = await api("/api/status");
+      const st = await api(withRun("/api/status"));
       renderGov(st.checks || {});
       $("govMeta").textContent = `elapsed_ms=${st.elapsed_ms || 0}`;
     } catch (e) {
@@ -462,11 +547,29 @@ INDEX_HTML = """<!doctype html>
     }
   }
 
-  $("refreshBtn").addEventListener("click", refreshSummaryAndTree);
-  $("statusBtn").addEventListener("click", refreshStatus);
+  $("reloadRunsBtn").addEventListener("click", async () => {
+    await loadRuns();
+  });
 
-  refreshSummaryAndTree();
-  refreshStatus();
+  $("runSelect").addEventListener("change", async () => {
+    await refreshSummaryAndTree();
+    await refreshStatus();
+  });
+
+  $("refreshBtn").addEventListener("click", async () => {
+    await refreshSummaryAndTree();
+  });
+
+  $("statusBtn").addEventListener("click", async () => {
+    await refreshStatus();
+  });
+
+  // boot
+  (async () => {
+    await loadRuns();
+    await refreshSummaryAndTree();
+    await refreshStatus();
+  })();
 </script>
 </body>
 </html>
@@ -476,6 +579,7 @@ INDEX_HTML = """<!doctype html>
 @dataclass(frozen=True)
 class UiConfig:
     run_dir: Path
+    base_dir: Path
     host: str
     port: int
     max_file_bytes: int
@@ -483,7 +587,7 @@ class UiConfig:
 
 
 class UiHandler(BaseHTTPRequestHandler):
-    server_version = "crimex-ui/phase1a"
+    server_version = "crimex-ui/phase1b"
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -501,14 +605,36 @@ class UiHandler(BaseHTTPRequestHandler):
         self._send(status, text.encode("utf-8"), content_type)
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        # Keep deterministic-ish logs (no timestamps). Also quiet by default.
-        # If you want logs, run with --verbose.
         if hasattr(self.server, "_verbose") and self.server._verbose:
             super().log_message(fmt, *args)
 
     @property
     def cfg(self) -> UiConfig:
         return self.server._cfg
+
+    def _selected_run_dir_from_query(self, query: str) -> tuple[Path, str | None]:
+        """
+        Return (selected_run_dir, error_message). Defaults to cfg.run_dir if no run param.
+        """
+        params = urllib.parse.parse_qs(query, keep_blank_values=True)
+        run_raw = (params.get("run") or [""])[0].strip()
+        if not run_raw:
+            return self.cfg.run_dir, None
+
+        try:
+            run_rel = _safe_relpath(run_raw)
+        except ValueError as e:
+            return self.cfg.run_dir, str(e)
+
+        base = self.cfg.base_dir
+        target = (base / run_rel).resolve(strict=False)
+        if not _is_under(base, target):
+            return self.cfg.run_dir, "path traversal not allowed"
+
+        if not target.exists() or not target.is_dir():
+            return self.cfg.run_dir, "run directory not found"
+
+        return target, None
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
@@ -522,16 +648,20 @@ class UiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"ok": True})
             return
 
+        if path == "/api/runs":
+            self._handle_runs()
+            return
+
         if path == "/api/run/summary":
-            self._handle_summary()
+            self._handle_summary(parsed.query)
             return
 
         if path == "/api/status":
-            self._handle_status()
+            self._handle_status(parsed.query)
             return
 
         if path == "/api/tree":
-            self._handle_tree()
+            self._handle_tree(parsed.query)
             return
 
         if path == "/api/file":
@@ -540,8 +670,43 @@ class UiHandler(BaseHTTPRequestHandler):
 
         self._send_text(HTTPStatus.NOT_FOUND, "not found")
 
-    def _handle_summary(self) -> None:
-        run_dir = self.cfg.run_dir
+    def _handle_runs(self) -> None:
+        """
+        Deterministically list immediate child directories under base_dir.
+        We don't use mtime or OS-dependent ordering. Only lexicographic.
+        """
+        base = self.cfg.base_dir
+        runs: list[dict[str, Any]] = []
+        if base.exists() and base.is_dir():
+            children = [p for p in base.iterdir() if p.is_dir()]
+            children.sort(key=lambda p: p.name)
+            for d in children:
+                rel = _as_posix_rel(base, d)
+                manifest = (d / "run_manifest.json").exists()
+                facts = (d / "facts" / "facts.jsonl").exists()
+                bundle = (d / "run_bundle.zip").exists()
+                runs.append(
+                    {
+                        "run": rel,
+                        "has_manifest": bool(manifest),
+                        "has_facts": bool(facts),
+                        "has_bundle": bool(bundle),
+                    }
+                )
+
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "base_dir": str(base),
+                "runs": runs,
+            },
+        )
+
+    def _handle_summary(self, query: str) -> None:
+        run_dir, err = self._selected_run_dir_from_query(query)
+        if err is not None:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": err})
+            return
 
         manifest_path = run_dir / "run_manifest.json"
         facts_path = run_dir / "facts" / "facts.jsonl"
@@ -583,23 +748,18 @@ class UiHandler(BaseHTTPRequestHandler):
         }
         self._send_json(HTTPStatus.OK, out)
 
-    def _handle_status(self) -> None:
-        """
-        Governance status:
-          - verify-run (always attempted)
-          - qa (SKIP if facts missing)
-          - validate (SKIP if facts missing)
-        Time-bounded, deterministic summary.
-        """
-        run_dir = self.cfg.run_dir
-        facts_path = run_dir / "facts" / "facts.jsonl"
+    def _handle_status(self, query: str) -> None:
+        run_dir, err = self._selected_run_dir_from_query(query)
+        if err is not None:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": err})
+            return
 
+        facts_path = run_dir / "facts" / "facts.jsonl"
         t0 = _now_monotonic_ms()
 
         def _base_py_cli() -> list[str]:
             return [sys.executable, "-m", "crimex.cli"]
 
-        # verify-run (always)
         vr_res = _run_cli(
             _base_py_cli() + ["verify-run", "--run-dir", str(run_dir)],
             timeout_s=self.cfg.cmd_timeout_s,
@@ -615,7 +775,6 @@ class UiHandler(BaseHTTPRequestHandler):
             }
         }
 
-        # qa / validate depend on facts
         if not facts_path.exists():
             checks["qa"] = {"status": "SKIP", "exit_code": None, "summary": "facts missing", "elapsed_ms": 0}
             checks["validate"] = {"status": "SKIP", "exit_code": None, "summary": "facts missing", "elapsed_ms": 0}
@@ -652,12 +811,23 @@ class UiHandler(BaseHTTPRequestHandler):
         }
         self._send_json(HTTPStatus.OK, out)
 
-    def _handle_tree(self) -> None:
-        tree = _build_tree(self.cfg.run_dir)
+    def _handle_tree(self, query: str) -> None:
+        run_dir, err = self._selected_run_dir_from_query(query)
+        if err is not None:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": err})
+            return
+        tree = _build_tree(run_dir)
         self._send_json(HTTPStatus.OK, tree)
 
     def _handle_file(self, query: str) -> None:
         params = urllib.parse.parse_qs(query, keep_blank_values=True)
+
+        # Resolve run dir first (Phase 1B)
+        run_dir, err = self._selected_run_dir_from_query(query)
+        if err is not None:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": err})
+            return
+
         raw_path = (params.get("path") or [""])[0]
 
         try:
@@ -666,8 +836,8 @@ class UiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(e)})
             return
 
-        target = (self.cfg.run_dir / rel).resolve(strict=False)
-        if not _is_under(self.cfg.run_dir, target):
+        target = (run_dir / rel).resolve(strict=False)
+        if not _is_under(run_dir, target):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "path traversal not allowed"})
             return
 
@@ -675,14 +845,12 @@ class UiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "file not found", "path": rel})
             return
 
-        # Serve as JSON with content (text) for now. Binary is not supported in Phase 0/1A.
-        # If it's likely binary, we return an informative error.
         mime, _ = mimetypes.guess_type(str(target))
         if mime and not mime.startswith(("text/", "application/json", "application/xml")):
             self._send_json(
                 HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
                 {
-                    "error": "binary or unsupported file type in Phase 0",
+                    "error": "binary or unsupported file type in Phase 0/1A/1B",
                     "path": rel,
                     "mime": mime,
                 },
@@ -700,28 +868,17 @@ class UiHandler(BaseHTTPRequestHandler):
         )
 
 
-def _count_files(tree: dict[str, Any]) -> int:
-    if tree.get("type") == "file":
-        return 1
-    total = 0
-    for ch in tree.get("children", []):
-        total += _count_files(ch)
-    return total
-
-
-def _pick_free_port(host: str) -> int:
-    # Bind to port 0 to find an available port, then close.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((host, 0))
-        return int(s.getsockname()[1])
-
-
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m crimex.ui.server",
-        description="crimex UI (Phase 1A): governance status + deterministic read-only run viewer (stdlib-only).",
+        description="crimex UI (Phase 1B): run picker + governance status (stdlib-only).",
     )
     p.add_argument("--run-dir", required=True, help="Path to an existing run directory.")
+    p.add_argument(
+        "--base-dir",
+        default=None,
+        help="Base directory containing multiple run directories (default: parent of --run-dir).",
+    )
     p.add_argument("--host", default="127.0.0.1", help="Bind host (default 127.0.0.1).")
     p.add_argument("--port", type=int, default=0, help="Bind port (0 picks a free port).")
     p.add_argument("--max-file-bytes", type=int, default=500_000, help="Max bytes served per file (default 500k).")
@@ -743,6 +900,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: run_dir does not exist or is not a directory: {run_dir}", file=sys.stderr)
         return 2
 
+    base_dir = Path(args.base_dir).resolve(strict=False) if args.base_dir else run_dir.parent.resolve(strict=False)
+
+    if not base_dir.exists() or not base_dir.is_dir():
+        print(f"ERROR: base_dir does not exist or is not a directory: {base_dir}", file=sys.stderr)
+        return 2
+
     host = str(args.host)
     port = int(args.port)
     if port == 0:
@@ -750,6 +913,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = UiConfig(
         run_dir=run_dir,
+        base_dir=base_dir,
         host=host,
         port=port,
         max_file_bytes=int(args.max_file_bytes),
@@ -760,8 +924,9 @@ def main(argv: list[str] | None = None) -> int:
     httpd._cfg = cfg
     httpd._verbose = bool(args.verbose)
 
-    print("crimex UI (Phase 1A) running (read-only)")
-    print(f"run_dir: {cfg.run_dir}")
+    print("crimex UI (Phase 1B) running (read-only)")
+    print(f"base_dir: {cfg.base_dir}")
+    print(f"default run_dir: {cfg.run_dir}")
     print(f"url: http://{cfg.host}:{cfg.port}/")
     try:
         httpd.serve_forever(poll_interval=0.25)

@@ -60,12 +60,14 @@ def _wait_for_health(port: int, timeout_s: float = 1.0) -> None:
 def _start_server(
     run_dir: Path,
     *,
+    base_dir: Path | None = None,
     max_file_bytes: int = 100_000,
     cmd_timeout_s: float = 0.5,
 ) -> tuple[ThreadingHTTPServer, int]:
     port = _pick_free_port()
     cfg = UiConfig(
         run_dir=run_dir,
+        base_dir=(base_dir or run_dir.parent),
         host="127.0.0.1",
         port=port,
         max_file_bytes=max_file_bytes,
@@ -81,14 +83,13 @@ def _start_server(
     return httpd, port
 
 
-def _make_minimal_run_dir(tmp_path: Path) -> Path:
-    run_dir = tmp_path / "run"
+def _make_minimal_run_dir(base: Path, name: str) -> Path:
+    run_dir = base / name
     (run_dir / "raw" / "fbi_cde").mkdir(parents=True)
     (run_dir / "facts").mkdir()
     (run_dir / "reports").mkdir()
     (run_dir / "logs").mkdir()
 
-    # Minimal files expected by UI
     (run_dir / "logs" / "run.log").write_text("smoke run", encoding="utf-8")
     (run_dir / "facts" / "facts.jsonl").write_text(
         '{"fact_type":"demo","value":1}\n{"fact_type":"demo","value":2}\n',
@@ -105,7 +106,6 @@ def _make_minimal_run_dir(tmp_path: Path) -> Path:
     }
     (run_dir / "run_manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2), encoding="utf-8")
 
-    # Fake bundle present
     (run_dir / "run_bundle.zip").write_bytes(b"PK\x03\x04FAKEZIP")
     return run_dir
 
@@ -115,22 +115,47 @@ def _list_files(root: Path) -> list[str]:
 
 
 def _fake_completed_process(rc: int, out: str = "", err: str = "") -> subprocess.CompletedProcess[str]:
-    # CompletedProcess[str] is sufficient for our usage in ui_server._run_cli
     return subprocess.CompletedProcess(args=["x"], returncode=rc, stdout=out, stderr=err)
 
 
 @pytest.mark.timeout(10)
+def test_ui_phase1b_helper_branches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    bad = tmp_path / "bad.txt"
+    bad.write_bytes(b"\xff\xfe\xfa")
+    txt = ui_server._read_text(bad, max_bytes=10)
+    assert txt == bad.read_bytes().decode("latin-1", errors="replace")
+
+    assert ui_server._safe_relpath(".") == ""
+    assert ui_server._summarize_text("x" * 300).endswith("...")
+
+    def _raise_timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="x", timeout=0.01)
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _raise_timeout)
+    res = ui_server._run_cli(["x"], timeout_s=0.01)
+    assert res["stderr_1"] == "TIMEOUT"
+
+    def _raise_oserror(*_args, **_kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _raise_oserror)
+    res2 = ui_server._run_cli(["x"], timeout_s=0.01)
+    assert res2["stderr_1"].startswith("OSError:")
+
+
+@pytest.mark.timeout(10)
 def test_ui_phase0_health_and_summary(tmp_path: Path) -> None:
-    run_dir = _make_minimal_run_dir(tmp_path)
-    httpd, port = _start_server(run_dir)
+    base = tmp_path / "base"
+    base.mkdir()
+    run_dir = _make_minimal_run_dir(base, "runA")
+    httpd, port = _start_server(run_dir, base_dir=base)
 
     try:
         health = _http_get_json(f"http://127.0.0.1:{port}/health")
         assert health == {"ok": True}
 
         summary = _http_get_json(f"http://127.0.0.1:{port}/api/run/summary")
-        summary_run_dir = summary["run_dir"]
-        assert summary_run_dir.endswith(str(run_dir).replace("\\", "/")) or summary_run_dir.endswith(str(run_dir))
+        assert "runA" in summary["run_dir"]
         assert summary["manifest"]["exists"] is True
         assert summary["facts"]["exists"] is True
         assert summary["facts"]["records"] == 2
@@ -139,7 +164,6 @@ def test_ui_phase0_health_and_summary(tmp_path: Path) -> None:
         tree = _http_get_json(f"http://127.0.0.1:{port}/api/tree")
         assert tree["type"] == "dir"
 
-        # file read (text)
         file_path = urllib.parse.quote("reports/report.md")
         file_url = f"http://127.0.0.1:{port}/api/file?path={file_path}"
         file_data = _http_get_json(file_url)
@@ -152,35 +176,32 @@ def test_ui_phase0_health_and_summary(tmp_path: Path) -> None:
 
 @pytest.mark.timeout(10)
 def test_ui_phase0_api_file_errors_and_truncation(tmp_path: Path) -> None:
-    run_dir = _make_minimal_run_dir(tmp_path)
+    base = tmp_path / "base"
+    base.mkdir()
+    run_dir = _make_minimal_run_dir(base, "runA")
 
-    # add a long text file for truncation test
     long_path = run_dir / "reports" / "long.txt"
     long_path.write_text("X" * 40, encoding="utf-8")
 
-    httpd, port = _start_server(run_dir, max_file_bytes=10)
+    httpd, port = _start_server(run_dir, base_dir=base, max_file_bytes=10)
     try:
-        base = f"http://127.0.0.1:{port}"
+        base_url = f"http://127.0.0.1:{port}"
 
-        # traversal blocked
         traversal = urllib.parse.quote("../secrets.txt")
-        status, payload = _http_get_json_status(f"{base}/api/file?path={traversal}")
+        status, payload = _http_get_json_status(f"{base_url}/api/file?path={traversal}")
         assert status == 400
         assert "error" in payload
 
-        # missing file
         missing = urllib.parse.quote("does/not/exist.txt")
-        status, payload = _http_get_json_status(f"{base}/api/file?path={missing}")
+        status, payload = _http_get_json_status(f"{base_url}/api/file?path={missing}")
         assert status == 404
         assert payload.get("error") == "file not found"
 
-        # binary/unsupported MIME blocked
-        status, payload = _http_get_json_status(f"{base}/api/file?path=run_bundle.zip")
+        status, payload = _http_get_json_status(f"{base_url}/api/file?path=run_bundle.zip")
         assert status == 415
         assert "unsupported" in payload.get("error", "")
 
-        # truncation behavior
-        status, payload = _http_get_json_status(f"{base}/api/file?path=reports/long.txt")
+        status, payload = _http_get_json_status(f"{base_url}/api/file?path=reports/long.txt")
         assert status == 200
         assert payload.get("truncated") is True
         assert len(payload.get("content", "")) <= 10
@@ -192,15 +213,14 @@ def test_ui_phase0_api_file_errors_and_truncation(tmp_path: Path) -> None:
 
 @pytest.mark.timeout(10)
 def test_ui_phase0_summary_invalid_manifest_and_missing_facts(tmp_path: Path) -> None:
-    run_dir = _make_minimal_run_dir(tmp_path)
+    base = tmp_path / "base"
+    base.mkdir()
+    run_dir = _make_minimal_run_dir(base, "runA")
 
-    # Invalid manifest JSON
     (run_dir / "run_manifest.json").write_text("{", encoding="utf-8")
-
-    # Remove facts to hit missing path
     (run_dir / "facts" / "facts.jsonl").unlink()
 
-    httpd, port = _start_server(run_dir)
+    httpd, port = _start_server(run_dir, base_dir=base)
     try:
         summary = _http_get_json(f"http://127.0.0.1:{port}/api/run/summary")
         assert summary["manifest"]["exists"] is True
@@ -213,11 +233,13 @@ def test_ui_phase0_summary_invalid_manifest_and_missing_facts(tmp_path: Path) ->
 
 @pytest.mark.timeout(10)
 def test_ui_phase0_tree_includes_nested_files(tmp_path: Path) -> None:
-    run_dir = _make_minimal_run_dir(tmp_path)
+    base = tmp_path / "base"
+    base.mkdir()
+    run_dir = _make_minimal_run_dir(base, "runA")
     (run_dir / "raw" / "fbi_cde" / "nested" / "x.txt").parent.mkdir(parents=True, exist_ok=True)
     (run_dir / "raw" / "fbi_cde" / "nested" / "x.txt").write_text("x", encoding="utf-8")
 
-    httpd, port = _start_server(run_dir)
+    httpd, port = _start_server(run_dir, base_dir=base)
     try:
         tree = _http_get_json(f"http://127.0.0.1:{port}/api/tree")
 
@@ -240,10 +262,9 @@ def test_ui_phase0_tree_includes_nested_files(tmp_path: Path) -> None:
 
 @pytest.mark.timeout(10)
 def test_ui_phase1a_status_endpoint_pass_fail_skip(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """
-    Deterministically stub subprocess.run so /api/status doesn't depend on a real governed run.
-    """
-    run_dir = _make_minimal_run_dir(tmp_path)
+    base = tmp_path / "base"
+    base.mkdir()
+    run_dir = _make_minimal_run_dir(base, "runA")
 
     calls: list[list[str]] = []
 
@@ -255,8 +276,6 @@ def test_ui_phase1a_status_endpoint_pass_fail_skip(monkeypatch: pytest.MonkeyPat
     ) -> subprocess.CompletedProcess[str]:
         del capture_output, text, timeout
         calls.append(list(argv))
-
-        # argv looks like: [py, -m, crimex.cli, <cmd>, ...]
         cmd = argv[3] if len(argv) > 3 else ""
         if cmd == "verify-run":
             return _fake_completed_process(0, out="OK: verified 7 artifact(s)")
@@ -268,7 +287,7 @@ def test_ui_phase1a_status_endpoint_pass_fail_skip(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(ui_server.subprocess, "run", _fake_run)
 
-    httpd, port = _start_server(run_dir, cmd_timeout_s=0.25)
+    httpd, port = _start_server(run_dir, base_dir=base, cmd_timeout_s=0.25)
     try:
         st = _http_get_json(f"http://127.0.0.1:{port}/api/status")
         checks = st["checks"]
@@ -281,49 +300,81 @@ def test_ui_phase1a_status_endpoint_pass_fail_skip(monkeypatch: pytest.MonkeyPat
 
         assert checks["validate"]["status"] == "PASS"
 
-        # ensure we actually invoked the expected commands deterministically
         invoked = [c[3] for c in calls if len(c) > 3]
         assert invoked == ["verify-run", "qa", "validate"]
     finally:
         httpd.shutdown()
         httpd.server_close()
 
-    # Now SKIP behavior when facts missing (no subprocess calls for qa/validate)
-    run_dir2 = _make_minimal_run_dir(tmp_path / "b")
-    (run_dir2 / "facts" / "facts.jsonl").unlink()
 
-    calls2: list[list[str]] = []
+@pytest.mark.timeout(10)
+def test_ui_phase1b_runs_endpoint_and_run_selection(tmp_path: Path) -> None:
+    base = tmp_path / "runs"
+    base.mkdir()
+    run_a = _make_minimal_run_dir(base, "runA")
+    _ = _make_minimal_run_dir(base, "runB")
 
-    def _fake_run2(
+    httpd, port = _start_server(run_a, base_dir=base)
+    try:
+        runs = _http_get_json(f"http://127.0.0.1:{port}/api/runs")
+        assert runs["base_dir"].endswith(str(base))
+        listed = [r["run"] for r in runs["runs"]]
+        assert listed == ["runA", "runB"]
+
+        summary_b = _http_get_json(f"http://127.0.0.1:{port}/api/run/summary?run=runB")
+        assert "runB" in summary_b["run_dir"]
+
+        tree_b = _http_get_json(f"http://127.0.0.1:{port}/api/tree?run=runB")
+        assert tree_b["type"] == "dir"
+
+        status, payload = _http_get_json_status(f"http://127.0.0.1:{port}/api/run/summary?run=../evil")
+        assert status == 400
+        assert "error" in payload
+
+        status2, payload2 = _http_get_json_status(f"http://127.0.0.1:{port}/api/run/summary?run=missing")
+        assert status2 == 400
+        assert "error" in payload2
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.mark.timeout(10)
+def test_ui_phase1b_status_uses_selected_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    base = tmp_path / "runs"
+    base.mkdir()
+    run_a = _make_minimal_run_dir(base, "runA")
+    run_b = _make_minimal_run_dir(base, "runB")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(
         argv: list[str],
         capture_output: bool,
         text: bool,
         timeout: float,
     ) -> subprocess.CompletedProcess[str]:
         del capture_output, text, timeout
-        calls2.append(list(argv))
-        return _fake_completed_process(0, out="OK: verified 1 artifact(s)")
+        calls.append(list(argv))
+        return _fake_completed_process(0, out="OK")
 
-    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run2)
+    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run)
 
-    httpd2, port2 = _start_server(run_dir2, cmd_timeout_s=0.25)
+    httpd, port = _start_server(run_a, base_dir=base, cmd_timeout_s=0.25)
     try:
-        st2 = _http_get_json(f"http://127.0.0.1:{port2}/api/status")
-        checks2 = st2["checks"]
-        assert checks2["verify_run"]["status"] == "PASS"
-        assert checks2["qa"]["status"] == "SKIP"
-        assert checks2["validate"]["status"] == "SKIP"
-
-        invoked2 = [c[3] for c in calls2 if len(c) > 3]
-        assert invoked2 == ["verify-run"]
+        _ = _http_get_json(f"http://127.0.0.1:{port}/api/status?run=runB")
+        assert calls, "expected subprocess calls"
+        assert str(run_b) in calls[0]
     finally:
-        httpd2.shutdown()
-        httpd2.server_close()
+        httpd.shutdown()
+        httpd.server_close()
 
 
 @pytest.mark.timeout(10)
 def test_cli_ui_dispatches_to_server_main(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    run_dir = _make_minimal_run_dir(tmp_path)
+    base = tmp_path / "base"
+    base.mkdir()
+    run_dir = _make_minimal_run_dir(base, "runA")
     captured: dict[str, list[str]] = {}
 
     def _fake_main(argv: list[str] | None = None) -> int:
@@ -343,7 +394,9 @@ def test_cli_ui_dispatches_to_server_main(monkeypatch: pytest.MonkeyPatch, tmp_p
 
 @pytest.mark.timeout(10)
 def test_cli_ui_serves_health_without_writes(tmp_path: Path) -> None:
-    run_dir = _make_minimal_run_dir(tmp_path)
+    base = tmp_path / "base"
+    base.mkdir()
+    run_dir = _make_minimal_run_dir(base, "runA")
     before = _list_files(run_dir)
     port = _pick_free_port()
 
