@@ -9,3 +9,6 @@ out/
 # Runtime artifacts
 output/
 
+
+# coverage artifact
+.coverage
