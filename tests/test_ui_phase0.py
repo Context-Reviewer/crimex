@@ -571,3 +571,116 @@ def test_ui_phase1c_facts_missing_per_run(monkeypatch: pytest.MonkeyPatch, tmp_p
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+@pytest.mark.timeout(10)
+def test_ui_phase1d_runs_overview_deterministic_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    base = tmp_path / "runs"
+    base.mkdir()
+    run_a = _make_minimal_run_dir(base, "runA")
+    _ = _make_minimal_run_dir(base, "runB")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(
+        argv: list[str],
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, timeout
+        calls.append(list(argv))
+        return _fake_completed_process(0, out="OK")
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run)
+
+    httpd, port = _start_server(run_a, base_dir=base, cmd_timeout_s=0.25, runs_status_budget_ms=10_000)
+    try:
+        data = _http_get_json(f"http://127.0.0.1:{port}/api/runs/overview")
+        listed = [r["run"] for r in data["runs"]]
+        assert listed == ["runA", "runB"]
+        assert data["budget_ms"] == 10_000
+
+        for item in data["runs"]:
+            assert item["has_manifest"] is True
+            assert item["has_facts"] is True
+            assert item["has_bundle"] is True
+            checks = item["checks"]
+            assert "verify_run" in checks
+            assert "qa" in checks
+            assert "validate" in checks
+
+        seq: list[tuple[str, str]] = []
+        for argv in calls:
+            cmd = argv[3] if len(argv) > 3 else ""
+            run_name = Path(argv[5]).parents[1].name if cmd == "validate" else Path(argv[5]).name
+            seq.append((cmd, run_name))
+
+        assert seq == [
+            ("verify-run", "runA"),
+            ("qa", "runA"),
+            ("validate", "runA"),
+            ("verify-run", "runB"),
+            ("qa", "runB"),
+            ("validate", "runB"),
+        ]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.mark.timeout(10)
+def test_ui_phase1d_overview_budget_skip_includes_meta(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    base = tmp_path / "runs"
+    base.mkdir()
+    run_a = _make_minimal_run_dir(base, "runA")
+    _ = _make_minimal_run_dir(base, "runB")
+    _ = _make_minimal_run_dir(base, "runC")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(
+        argv: list[str],
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, timeout
+        calls.append(list(argv))
+        return _fake_completed_process(0, out="OK")
+
+    tick = {"ms": 0}
+
+    def _fake_now() -> int:
+        tick["ms"] += 100
+        return tick["ms"]
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ui_server, "_now_monotonic_ms", _fake_now)
+
+    httpd, port = _start_server(run_a, base_dir=base, cmd_timeout_s=0.25, runs_status_budget_ms=500)
+    try:
+        data = _http_get_json(f"http://127.0.0.1:{port}/api/runs/overview")
+        listed = [r["run"] for r in data["runs"]]
+        assert listed == ["runA", "runB", "runC"]
+        assert data["budget_ms"] == 500
+
+        invoked = [c[3] for c in calls if len(c) > 3]
+        assert invoked == ["verify-run", "qa", "validate"]
+
+        run_b = data["runs"][1]
+        run_c = data["runs"][2]
+        for item in (run_b, run_c):
+            assert item["has_manifest"] is True
+            assert item["has_facts"] is True
+            assert item["has_bundle"] is True
+            checks = item["checks"]
+            assert checks["verify_run"]["status"] == "SKIP"
+            assert checks["qa"]["status"] == "SKIP"
+            assert checks["validate"]["status"] == "SKIP"
+            assert checks["verify_run"]["summary"] == "TIME BUDGET EXCEEDED"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

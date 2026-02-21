@@ -229,6 +229,15 @@ def _base_py_cli() -> list[str]:
     return [sys.executable, "-m", "crimex.cli"]
 
 
+def _run_meta(base: Path, d: Path) -> dict[str, Any]:
+    return {
+        "run": _as_posix_rel(base, d),
+        "has_manifest": (d / "run_manifest.json").exists(),
+        "has_facts": (d / "facts" / "facts.jsonl").exists(),
+        "has_bundle": (d / "run_bundle.zip").exists(),
+    }
+
+
 # ----------------------------
 # HTTP Server
 # ----------------------------
@@ -239,7 +248,7 @@ INDEX_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>crimex UI (Phase 1C) - Run Viewer</title>
+  <title>crimex UI (Phase 1D) - Run Viewer</title>
   <style>
     :root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
     body { margin: 0; padding: 0; background: #0b0d10; color: #e9eef5; }
@@ -301,11 +310,25 @@ INDEX_HTML = """<!doctype html>
     .runs-table th { text-align:left; font-size:11px; color:#9fb0c4; padding:4px 0; }
     .runs-table td { padding:4px 0; border-top:1px solid #1c2430; vertical-align:middle; }
     .runs-table .run-name { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .filter-row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .filter-row label { display:flex; gap:6px; align-items:center; font-size:11px; color:#cfe0f5; }
+    .filter-row input { accent-color:#2b7cff; }
+    .fact-pill {
+      display:inline-block;
+      min-width:18px;
+      text-align:center;
+      padding:2px 6px;
+      border-radius:999px;
+      border:1px solid #1c2430;
+      font-size:11px;
+    }
+    .fact-pill.y { background:#0b1a12; border-color:#144a2f; }
+    .fact-pill.n { background:#111827; border-color:#24314a; color:#a9b6c6; }
   </style>
 </head>
 <body>
 <header>
-  <h1>crimex UI (Phase 1C) - Run Viewer</h1>
+  <h1>crimex UI (Phase 1D) - Run Viewer</h1>
   <div class="sub">
     Read-only. Deterministic listings. No writes to run directory.
     <span class="pill mono" id="baseDirPill"></span>
@@ -360,10 +383,20 @@ INDEX_HTML = """<!doctype html>
         <span class="muted small" id="runsOverviewMeta"></span>
       </div>
       <div style="height:10px"></div>
+      <div class="filter-row">
+        <label><input type="checkbox" id="filterFailOnly"> Show FAIL only</label>
+        <label><input type="checkbox" id="filterHidePass"> Hide PASS</label>
+        <label><input type="checkbox" id="filterHideSkip"> Hide SKIP</label>
+        <span class="muted small">Fail-first sort (FAIL -> SKIP -> PASS)</span>
+      </div>
+      <div style="height:10px"></div>
       <table class="runs-table">
         <thead>
           <tr>
             <th>run</th>
+            <th>manifest</th>
+            <th>facts</th>
+            <th>bundle</th>
             <th>verify</th>
             <th>qa</th>
             <th>validate</th>
@@ -371,7 +404,7 @@ INDEX_HTML = """<!doctype html>
           </tr>
         </thead>
         <tbody id="runsOverviewBody">
-          <tr><td class="muted" colspan="5">(loading...)</td></tr>
+          <tr><td class="muted" colspan="8">(loading...)</td></tr>
         </tbody>
       </table>
     </div>
@@ -394,6 +427,7 @@ INDEX_HTML = """<!doctype html>
 
 <script>
   const $ = (id) => document.getElementById(id);
+  let runsOverviewData = null;
 
   function getSelectedRun() {
     const el = $("runSelect");
@@ -437,6 +471,129 @@ INDEX_HTML = """<!doctype html>
     return "badge skip";
   }
 
+  const STATUS_RANK = { "FAIL": 0, "SKIP": 1, "PASS": 2 };
+
+  function overallStatus(checks) {
+    const names = ["verify_run", "qa", "validate"];
+    let has_skip = false;
+    for (const name of names) {
+      const ch = checks && checks[name] ? checks[name] : {};
+      const st = ch.status || "SKIP";
+      if (st === "FAIL") return "FAIL";
+      if (st !== "PASS") has_skip = true;
+    }
+    return has_skip ? "SKIP" : "PASS";
+  }
+
+  function compareRuns(a, b) {
+    const sa = overallStatus(a.checks || {});
+    const sb = overallStatus(b.checks || {});
+    const ra = STATUS_RANK[sa] ?? 2;
+    const rb = STATUS_RANK[sb] ?? 2;
+    if (ra !== rb) return ra - rb;
+    const an = a.run || "";
+    const bn = b.run || "";
+    if (an < bn) return -1;
+    if (an > bn) return 1;
+    return 0;
+  }
+
+  function applyRunsOverviewFilters(runs) {
+    const failOnlyEl = $("filterFailOnly");
+    const hidePassEl = $("filterHidePass");
+    const hideSkipEl = $("filterHideSkip");
+    const failOnly = !!(failOnlyEl && failOnlyEl.checked);
+    const hidePass = !!(hidePassEl && hidePassEl.checked);
+    const hideSkip = !!(hideSkipEl && hideSkipEl.checked);
+
+    return runs.filter((r) => {
+      const st = overallStatus(r.checks || {});
+      if (failOnly) return st === "FAIL";
+      if (hidePass && st === "PASS") return false;
+      if (hideSkip && st === "SKIP") return false;
+      return true;
+    });
+  }
+
+  function renderRunsOverviewTable(runs, totalCount) {
+    const body = $("runsOverviewBody");
+    body.innerHTML = "";
+    if (!runs.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 8;
+      td.className = "muted";
+      td.textContent = totalCount ? "(no matching runs)" : "(no runs found)";
+      tr.appendChild(td);
+      body.appendChild(tr);
+      return;
+    }
+
+    function factCell(value) {
+      const td = document.createElement("td");
+      const span = document.createElement("span");
+      const ok = !!value;
+      span.className = ok ? "fact-pill y" : "fact-pill n";
+      span.textContent = ok ? "Y" : "N";
+      td.appendChild(span);
+      return td;
+    }
+
+    for (const r of runs) {
+      const tr = document.createElement("tr");
+
+      const tdRun = document.createElement("td");
+      tdRun.className = "run-name";
+      tdRun.textContent = r.run || "";
+      tr.appendChild(tdRun);
+
+      tr.appendChild(factCell(r.has_manifest));
+      tr.appendChild(factCell(r.has_facts));
+      tr.appendChild(factCell(r.has_bundle));
+
+      const checks = r.checks || {};
+      const names = ["verify_run", "qa", "validate"];
+      for (const name of names) {
+        const td = document.createElement("td");
+        const ch = checks[name] || {};
+        const b = document.createElement("span");
+        b.className = badgeClass(ch.status || "SKIP");
+        b.textContent = ch.status || "SKIP";
+        td.appendChild(b);
+        tr.appendChild(td);
+      }
+
+      const tdOpen = document.createElement("td");
+      const btn = document.createElement("button");
+      btn.textContent = "Open";
+      btn.addEventListener("click", async () => {
+        const sel = $("runSelect");
+        if (sel) {
+          const values = new Set(Array.from(sel.options).map(o => o.value));
+          if (!values.has(r.run || "")) {
+            await loadRuns();
+          }
+          sel.value = r.run || "";
+        }
+        await refreshSummaryAndTree();
+        await refreshStatus();
+      });
+      tdOpen.appendChild(btn);
+      tr.appendChild(tdOpen);
+
+      body.appendChild(tr);
+    }
+  }
+
+  function applyRunsOverviewView() {
+    const data = runsOverviewData || {};
+    const totalCount = Array.isArray(data.runs) ? data.runs.length : 0;
+    let runs = Array.isArray(data.runs) ? data.runs.slice() : [];
+    runs.sort(compareRuns);
+    runs = applyRunsOverviewFilters(runs);
+    renderRunsOverviewTable(runs, totalCount);
+  }
+
   function renderGov(checks) {
     const host = $("govHost");
     host.innerHTML = "";
@@ -471,60 +628,8 @@ INDEX_HTML = """<!doctype html>
   }
 
   function renderRunsOverview(data) {
-    const body = $("runsOverviewBody");
-    body.innerHTML = "";
-    const runs = data && data.runs ? data.runs : [];
-    if (!runs.length) {
-      const tr = document.createElement("tr");
-      const td = document.createElement("td");
-      td.colSpan = 5;
-      td.className = "muted";
-      td.textContent = "(no runs found)";
-      tr.appendChild(td);
-      body.appendChild(tr);
-      return;
-    }
-
-    for (const r of runs) {
-      const tr = document.createElement("tr");
-
-      const tdRun = document.createElement("td");
-      tdRun.className = "run-name";
-      tdRun.textContent = r.run || "";
-      tr.appendChild(tdRun);
-
-      const checks = r.checks || {};
-      const names = ["verify_run", "qa", "validate"];
-      for (const name of names) {
-        const td = document.createElement("td");
-        const ch = checks[name] || {};
-        const b = document.createElement("span");
-        b.className = badgeClass(ch.status || "SKIP");
-        b.textContent = ch.status || "SKIP";
-        td.appendChild(b);
-        tr.appendChild(td);
-      }
-
-      const tdOpen = document.createElement("td");
-      const btn = document.createElement("button");
-      btn.textContent = "Open";
-      btn.addEventListener("click", async () => {
-        const sel = $("runSelect");
-        if (sel) {
-          const values = new Set(Array.from(sel.options).map(o => o.value));
-          if (!values.has(r.run || "")) {
-            await loadRuns();
-          }
-          sel.value = r.run || "";
-        }
-        await refreshSummaryAndTree();
-        await refreshStatus();
-      });
-      tdOpen.appendChild(btn);
-      tr.appendChild(tdOpen);
-
-      body.appendChild(tr);
-    }
+    runsOverviewData = data || { runs: [] };
+    applyRunsOverviewView();
   }
 
   function renderTreeNode(node, prefixPath) {
@@ -648,9 +753,9 @@ INDEX_HTML = """<!doctype html>
   async function refreshRunsOverview() {
     $("runsOverviewMeta").textContent = "Loading...";
     try {
-      const data = await api("/api/runs/status");
+      const data = await api("/api/runs/overview");
       renderRunsOverview(data);
-      $("runsOverviewMeta").textContent = `elapsed_ms=${data.elapsed_ms || 0}`;
+      $("runsOverviewMeta").textContent = `elapsed_ms=${data.elapsed_ms || 0} budget_ms=${data.budget_ms || 0}`;
     } catch (e) {
       $("runsOverviewMeta").textContent = `ERROR: ${e}`;
     } finally {
@@ -678,6 +783,16 @@ INDEX_HTML = """<!doctype html>
   $("runsOverviewBtn").addEventListener("click", async () => {
     await refreshRunsOverview();
   });
+
+  const filterIds = ["filterFailOnly", "filterHidePass", "filterHideSkip"];
+  for (const id of filterIds) {
+    const el = $(id);
+    if (el) {
+      el.addEventListener("change", () => {
+        applyRunsOverviewView();
+      });
+    }
+  }
 
   // boot
   (async () => {
@@ -761,7 +876,7 @@ def _skip_checks(summary: str) -> dict[str, Any]:
 
 
 class UiHandler(BaseHTTPRequestHandler):
-    server_version = "crimex-ui/phase1c"
+    server_version = "crimex-ui/phase1d"
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -830,6 +945,10 @@ class UiHandler(BaseHTTPRequestHandler):
             self._handle_runs_status()
             return
 
+        if path == "/api/runs/overview":
+            self._handle_runs_overview()
+            return
+
         if path == "/api/run/summary":
             self._handle_summary(parsed.query)
             return
@@ -856,18 +975,7 @@ class UiHandler(BaseHTTPRequestHandler):
         base = self.cfg.base_dir
         runs: list[dict[str, Any]] = []
         for d in _iter_run_dirs(base):
-            rel = _as_posix_rel(base, d)
-            manifest = (d / "run_manifest.json").exists()
-            facts = (d / "facts" / "facts.jsonl").exists()
-            bundle = (d / "run_bundle.zip").exists()
-            runs.append(
-                {
-                    "run": rel,
-                    "has_manifest": bool(manifest),
-                    "has_facts": bool(facts),
-                    "has_bundle": bool(bundle),
-                }
-            )
+            runs.append(_run_meta(base, d))
 
         self._send_json(
             HTTPStatus.OK,
@@ -906,6 +1014,37 @@ class UiHandler(BaseHTTPRequestHandler):
                 "base_dir": str(base),
                 "runs": runs_out,
                 "elapsed_ms": int(elapsed_total),
+            },
+        )
+
+    def _handle_runs_overview(self) -> None:
+        base = self.cfg.base_dir
+        t0 = _now_monotonic_ms()
+        runs_out: list[dict[str, Any]] = []
+        run_dirs = _iter_run_dirs(base)
+        budget_ms = max(0, int(self.cfg.runs_status_budget_ms))
+
+        for idx, d in enumerate(run_dirs):
+            elapsed = _now_monotonic_ms() - t0
+            if elapsed >= budget_ms:
+                for r in run_dirs[idx:]:
+                    meta = _run_meta(base, r)
+                    meta["checks"] = _skip_checks("TIME BUDGET EXCEEDED")
+                    runs_out.append(meta)
+                break
+
+            meta = _run_meta(base, d)
+            meta["checks"] = _compute_governance_checks(d, self.cfg)
+            runs_out.append(meta)
+
+        elapsed_total = _now_monotonic_ms() - t0
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "base_dir": str(base),
+                "runs": runs_out,
+                "elapsed_ms": int(elapsed_total),
+                "budget_ms": int(budget_ms),
             },
         )
 
@@ -1031,7 +1170,7 @@ class UiHandler(BaseHTTPRequestHandler):
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m crimex.ui.server",
-        description="crimex UI (Phase 1C): run picker + governance status (stdlib-only).",
+        description="crimex UI (Phase 1D): run picker + governance status (stdlib-only).",
     )
     p.add_argument("--run-dir", required=True, help="Path to an existing run directory.")
     p.add_argument(
@@ -1052,7 +1191,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--runs-status-budget-ms",
         type=int,
         default=2000,
-        help="Total time budget for /api/runs/status in ms (default 2000).",
+        help="Total time budget for /api/runs/status and /api/runs/overview in ms (default 2000).",
     )
     p.add_argument("--verbose", action="store_true", help="Enable request logging.")
     return p
@@ -1091,7 +1230,7 @@ def main(argv: list[str] | None = None) -> int:
     httpd._cfg = cfg
     httpd._verbose = bool(args.verbose)
 
-    print("crimex UI (Phase 1C) running (read-only)")
+    print("crimex UI (Phase 1D) running (read-only)")
     print(f"base_dir: {cfg.base_dir}")
     print(f"default run_dir: {cfg.run_dir}")
     print(f"url: http://{cfg.host}:{cfg.port}/")
