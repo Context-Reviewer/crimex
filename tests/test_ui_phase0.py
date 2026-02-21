@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -12,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+import crimex.cli as cli
 from crimex.ui.server import UiConfig, UiHandler
 
 
@@ -93,6 +96,10 @@ def _make_minimal_run_dir(tmp_path: Path) -> Path:
     # Fake bundle present
     (run_dir / "run_bundle.zip").write_bytes(b"PK\x03\x04FAKEZIP")
     return run_dir
+
+
+def _list_files(root: Path) -> list[str]:
+    return sorted(str(p.relative_to(root)).replace("\\", "/") for p in root.rglob("*") if p.is_file())
 
 
 @pytest.mark.timeout(10)
@@ -212,3 +219,62 @@ def test_ui_phase0_tree_includes_nested_files(tmp_path: Path) -> None:
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+@pytest.mark.timeout(10)
+def test_cli_ui_dispatches_to_server_main(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    run_dir = _make_minimal_run_dir(tmp_path)
+    captured: dict[str, list[str]] = {}
+
+    def _fake_main(argv: list[str] | None = None) -> int:
+        captured["argv"] = list(argv or [])
+        return 0
+
+    monkeypatch.setattr("crimex.ui.server.main", _fake_main)
+    monkeypatch.setattr(cli.sys, "argv", ["crimex", "ui", "--run-dir", str(run_dir), "--port", "0"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+    assert excinfo.value.code == 0
+    assert "--run-dir" in captured["argv"]
+    assert str(run_dir) in captured["argv"]
+    assert "--port" in captured["argv"]
+
+
+@pytest.mark.timeout(10)
+def test_cli_ui_serves_health_without_writes(tmp_path: Path) -> None:
+    run_dir = _make_minimal_run_dir(tmp_path)
+    before = _list_files(run_dir)
+    port = _pick_free_port()
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "crimex.cli",
+        "ui",
+        "--run-dir",
+        str(run_dir),
+        "--port",
+        str(port),
+    ]
+
+    proc = subprocess.Popen(  # noqa: S603
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    try:
+        _wait_for_health(port, timeout_s=2.0)
+        health = _http_get_json(f"http://127.0.0.1:{port}/health")
+        assert health == {"ok": True}
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2.0)
+
+    after = _list_files(run_dir)
+    assert before == after

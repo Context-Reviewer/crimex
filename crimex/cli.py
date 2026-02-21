@@ -157,6 +157,15 @@ def main():
         help="Path to a run directory containing facts/facts.jsonl",
     )
 
+    # ui command (Phase 0.5)
+    ui_parser = subparsers.add_parser(
+        "ui",
+        help="Launch local read-only UI for inspecting a run directory",
+    )
+    ui_parser.add_argument("--run-dir", required=True, help="Path to an existing run directory")
+    ui_parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    ui_parser.add_argument("--port", type=int, default=0, help="Bind port (0 picks a free port)")
+
     args = parser.parse_args()
 
     if args.command == "fetch":
@@ -177,6 +186,8 @@ def main():
         handle_bundle(args)
     elif args.command == "qa":
         handle_qa(args)
+    elif args.command == "ui":
+        handle_ui(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -192,6 +203,20 @@ def handle_qa(args) -> None:
         sys.exit(1)
     print("QA PASS")
     sys.exit(0)
+
+
+def handle_ui(args) -> None:
+    from crimex.ui import server as ui_server
+
+    argv = [
+        "--run-dir",
+        args.run_dir,
+        "--host",
+        args.host,
+        "--port",
+        str(args.port),
+    ]
+    raise SystemExit(ui_server.main(argv))
 
 
 def handle_bundle(args) -> None:
