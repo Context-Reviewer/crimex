@@ -6,6 +6,7 @@ import mimetypes
 import os
 import posixpath
 import socket
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -140,6 +141,71 @@ def _load_json_if_exists(path: Path, *, max_bytes: int) -> tuple[bool, Any | Non
         return True, None, f"{type(e).__name__}: {e}"
 
 
+def _summarize_text(s: str, *, max_chars: int = 240) -> str:
+    s = (s or "").strip()
+    if not s:
+        return ""
+    line = s.splitlines()[0].strip()
+    if len(line) > max_chars:
+        return line[:max_chars] + "..."
+    return line
+
+
+def _run_cli(argv: list[str], *, timeout_s: float) -> dict[str, Any]:
+    """
+    Run `python -m crimex.cli ...` deterministically and return a small summary.
+    This is read-only with respect to run_dir, but the called commands might read files.
+    """
+    t0 = _now_monotonic_ms()
+    try:
+        cp = subprocess.run(  # noqa: S603
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+        elapsed = _now_monotonic_ms() - t0
+        out = (cp.stdout or "").strip()
+        err = (cp.stderr or "").strip()
+        return {
+            "ok": cp.returncode == 0,
+            "exit_code": int(cp.returncode),
+            "elapsed_ms": int(elapsed),
+            "stdout_1": _summarize_text(out),
+            "stderr_1": _summarize_text(err),
+        }
+    except subprocess.TimeoutExpired:
+        elapsed = _now_monotonic_ms() - t0
+        return {
+            "ok": False,
+            "exit_code": None,
+            "elapsed_ms": int(elapsed),
+            "stdout_1": "",
+            "stderr_1": "TIMEOUT",
+        }
+    except Exception as e:
+        elapsed = _now_monotonic_ms() - t0
+        return {
+            "ok": False,
+            "exit_code": None,
+            "elapsed_ms": int(elapsed),
+            "stdout_1": "",
+            "stderr_1": f"{type(e).__name__}: {e}",
+        }
+
+
+def _status_from_run_result(res: dict[str, Any]) -> tuple[str, str]:
+    """
+    Map _run_cli result to status + summary string deterministically.
+    """
+    if res.get("ok") is True:
+        summary = res.get("stdout_1") or res.get("stderr_1") or ""
+        return "PASS", summary
+    # FAIL path
+    summary = res.get("stderr_1") or res.get("stdout_1") or ""
+    return "FAIL", summary
+
+
 # ----------------------------
 # HTTP Server
 # ----------------------------
@@ -180,6 +246,14 @@ INDEX_HTML = """<!doctype html>
     button { border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer; }
     button:hover { border-color:#2b7cff; }
     a { color: #9cc4ff; }
+
+    .statusgrid { display:grid; grid-template-columns: 1fr; gap: 8px; }
+    .checkrow { display:flex; justify-content:space-between; gap:10px; align-items:center; }
+    .badge { font-size: 11px; padding:2px 8px; border-radius:999px; border:1px solid #1c2430; }
+    .badge.pass { background:#0b1a12; border-color:#144a2f; }
+    .badge.fail { background:#221012; border-color:#5b1e26; }
+    .badge.skip { background:#111827; border-color:#24314a; }
+    .small { font-size: 11px; color:#a9b6c6; }
   </style>
 </head>
 <body>
@@ -212,6 +286,20 @@ INDEX_HTML = """<!doctype html>
   </section>
 
   <section class="card">
+    <h2>Governance Status</h2>
+    <div class="body">
+      <div class="statusgrid" id="govHost">
+        <div class="muted">(loading...)</div>
+      </div>
+      <div style="height:10px"></div>
+      <div class="row">
+        <button id="statusBtn">Refresh status</button>
+        <span class="muted small" id="govMeta"></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
     <h2>Artifact Tree</h2>
     <div class="body tree" id="treeHost">(loading...)</div>
   </section>
@@ -228,10 +316,6 @@ INDEX_HTML = """<!doctype html>
 
 <script>
   const $ = (id) => document.getElementById(id);
-
-  function escapeHtml(s) {
-    return s.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
-  }
 
   async function api(path) {
     const r = await fetch(path, {cache:"no-store"});
@@ -254,6 +338,45 @@ INDEX_HTML = """<!doctype html>
 
       host.appendChild(kdiv);
       host.appendChild(vdiv);
+    }
+  }
+
+  function badgeClass(status) {
+    if (status === "PASS") return "badge pass";
+    if (status === "FAIL") return "badge fail";
+    return "badge skip";
+  }
+
+  function renderGov(checks) {
+    const host = $("govHost");
+    host.innerHTML = "";
+    const names = ["verify_run", "qa", "validate"];
+    for (const name of names) {
+      const ch = checks[name] || {};
+      const row = document.createElement("div");
+      row.className = "checkrow";
+
+      const left = document.createElement("div");
+      left.className = "mono";
+      left.textContent = name;
+
+      const right = document.createElement("div");
+      right.className = "row";
+
+      const b = document.createElement("span");
+      b.className = badgeClass(ch.status || "SKIP");
+      b.textContent = ch.status || "SKIP";
+
+      const s = document.createElement("span");
+      s.className = "mono small";
+      s.textContent = ch.summary || "";
+
+      right.appendChild(b);
+      right.appendChild(s);
+
+      row.appendChild(left);
+      row.appendChild(right);
+      host.appendChild(row);
     }
   }
 
@@ -297,7 +420,7 @@ INDEX_HTML = """<!doctype html>
     }
   }
 
-  async function refreshAll() {
+  async function refreshSummaryAndTree() {
     $("statusText").textContent = "Refreshing...";
     try {
       const summary = await api("/api/run/summary");
@@ -326,8 +449,24 @@ INDEX_HTML = """<!doctype html>
     }
   }
 
-  $("refreshBtn").addEventListener("click", refreshAll);
-  refreshAll();
+  async function refreshStatus() {
+    $("govMeta").textContent = "Running...";
+    try {
+      const st = await api("/api/status");
+      renderGov(st.checks || {});
+      $("govMeta").textContent = `elapsed_ms=${st.elapsed_ms || 0}`;
+    } catch (e) {
+      $("govMeta").textContent = `ERROR: ${e}`;
+    } finally {
+      setTimeout(() => { $("govMeta").textContent = ""; }, 1500);
+    }
+  }
+
+  $("refreshBtn").addEventListener("click", refreshSummaryAndTree);
+  $("statusBtn").addEventListener("click", refreshStatus);
+
+  refreshSummaryAndTree();
+  refreshStatus();
 </script>
 </body>
 </html>
@@ -340,10 +479,11 @@ class UiConfig:
     host: str
     port: int
     max_file_bytes: int
+    cmd_timeout_s: float
 
 
 class UiHandler(BaseHTTPRequestHandler):
-    server_version = "crimex-ui/phase0"
+    server_version = "crimex-ui/phase1a"
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -384,6 +524,10 @@ class UiHandler(BaseHTTPRequestHandler):
 
         if path == "/api/run/summary":
             self._handle_summary()
+            return
+
+        if path == "/api/status":
+            self._handle_status()
             return
 
         if path == "/api/tree":
@@ -439,6 +583,75 @@ class UiHandler(BaseHTTPRequestHandler):
         }
         self._send_json(HTTPStatus.OK, out)
 
+    def _handle_status(self) -> None:
+        """
+        Governance status:
+          - verify-run (always attempted)
+          - qa (SKIP if facts missing)
+          - validate (SKIP if facts missing)
+        Time-bounded, deterministic summary.
+        """
+        run_dir = self.cfg.run_dir
+        facts_path = run_dir / "facts" / "facts.jsonl"
+
+        t0 = _now_monotonic_ms()
+
+        def _base_py_cli() -> list[str]:
+            return [sys.executable, "-m", "crimex.cli"]
+
+        # verify-run (always)
+        vr_res = _run_cli(
+            _base_py_cli() + ["verify-run", "--run-dir", str(run_dir)],
+            timeout_s=self.cfg.cmd_timeout_s,
+        )
+        vr_status, vr_summary = _status_from_run_result(vr_res)
+
+        checks: dict[str, Any] = {
+            "verify_run": {
+                "status": vr_status,
+                "exit_code": vr_res.get("exit_code"),
+                "summary": vr_summary,
+                "elapsed_ms": vr_res.get("elapsed_ms"),
+            }
+        }
+
+        # qa / validate depend on facts
+        if not facts_path.exists():
+            checks["qa"] = {"status": "SKIP", "exit_code": None, "summary": "facts missing", "elapsed_ms": 0}
+            checks["validate"] = {"status": "SKIP", "exit_code": None, "summary": "facts missing", "elapsed_ms": 0}
+        else:
+            qa_res = _run_cli(
+                _base_py_cli() + ["qa", "--run-dir", str(run_dir)],
+                timeout_s=self.cfg.cmd_timeout_s,
+            )
+            qa_status, qa_summary = _status_from_run_result(qa_res)
+            checks["qa"] = {
+                "status": qa_status,
+                "exit_code": qa_res.get("exit_code"),
+                "summary": qa_summary,
+                "elapsed_ms": qa_res.get("elapsed_ms"),
+            }
+
+            val_res = _run_cli(
+                _base_py_cli() + ["validate", "--facts", str(facts_path)],
+                timeout_s=self.cfg.cmd_timeout_s,
+            )
+            val_status, val_summary = _status_from_run_result(val_res)
+            checks["validate"] = {
+                "status": val_status,
+                "exit_code": val_res.get("exit_code"),
+                "summary": val_summary,
+                "elapsed_ms": val_res.get("elapsed_ms"),
+            }
+
+        elapsed = _now_monotonic_ms() - t0
+        out = {
+            "run_dir": str(run_dir),
+            "checks": checks,
+            "elapsed_ms": int(elapsed),
+        }
+        self._send_json(HTTPStatus.OK, out)
+
     def _handle_tree(self) -> None:
         tree = _build_tree(self.cfg.run_dir)
         self._send_json(HTTPStatus.OK, tree)
@@ -462,7 +675,7 @@ class UiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "file not found", "path": rel})
             return
 
-        # Serve as JSON with content (text) for now. Binary is not supported in Phase 0.
+        # Serve as JSON with content (text) for now. Binary is not supported in Phase 0/1A.
         # If it's likely binary, we return an informative error.
         mime, _ = mimetypes.guess_type(str(target))
         if mime and not mime.startswith(("text/", "application/json", "application/xml")):
@@ -506,12 +719,18 @@ def _pick_free_port(host: str) -> int:
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m crimex.ui.server",
-        description="crimex UI (Phase 0): deterministic read-only run viewer (stdlib-only).",
+        description="crimex UI (Phase 1A): governance status + deterministic read-only run viewer (stdlib-only).",
     )
     p.add_argument("--run-dir", required=True, help="Path to an existing run directory.")
     p.add_argument("--host", default="127.0.0.1", help="Bind host (default 127.0.0.1).")
     p.add_argument("--port", type=int, default=0, help="Bind port (0 picks a free port).")
     p.add_argument("--max-file-bytes", type=int, default=500_000, help="Max bytes served per file (default 500k).")
+    p.add_argument(
+        "--cmd-timeout-s",
+        type=float,
+        default=2.5,
+        help="Timeout seconds per governance check command (default 2.5s).",
+    )
     p.add_argument("--verbose", action="store_true", help="Enable request logging.")
     return p
 
@@ -534,13 +753,14 @@ def main(argv: list[str] | None = None) -> int:
         host=host,
         port=port,
         max_file_bytes=int(args.max_file_bytes),
+        cmd_timeout_s=float(args.cmd_timeout_s),
     )
 
     httpd = ThreadingHTTPServer((cfg.host, cfg.port), UiHandler)
     httpd._cfg = cfg
     httpd._verbose = bool(args.verbose)
 
-    print("crimex UI (Phase 0) running (read-only)")
+    print("crimex UI (Phase 1A) running (read-only)")
     print(f"run_dir: {cfg.run_dir}")
     print(f"url: http://{cfg.host}:{cfg.port}/")
     try:

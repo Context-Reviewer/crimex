@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import crimex.cli as cli
+import crimex.ui.server as ui_server
 from crimex.ui.server import UiConfig, UiHandler
 
 
@@ -56,9 +57,20 @@ def _wait_for_health(port: int, timeout_s: float = 1.0) -> None:
     raise RuntimeError("server did not become healthy in time")
 
 
-def _start_server(run_dir: Path, *, max_file_bytes: int = 100_000) -> tuple[ThreadingHTTPServer, int]:
+def _start_server(
+    run_dir: Path,
+    *,
+    max_file_bytes: int = 100_000,
+    cmd_timeout_s: float = 0.5,
+) -> tuple[ThreadingHTTPServer, int]:
     port = _pick_free_port()
-    cfg = UiConfig(run_dir=run_dir, host="127.0.0.1", port=port, max_file_bytes=max_file_bytes)
+    cfg = UiConfig(
+        run_dir=run_dir,
+        host="127.0.0.1",
+        port=port,
+        max_file_bytes=max_file_bytes,
+        cmd_timeout_s=cmd_timeout_s,
+    )
     httpd = ThreadingHTTPServer((cfg.host, cfg.port), UiHandler)
     httpd._cfg = cfg
     httpd._verbose = False
@@ -100,6 +112,11 @@ def _make_minimal_run_dir(tmp_path: Path) -> Path:
 
 def _list_files(root: Path) -> list[str]:
     return sorted(str(p.relative_to(root)).replace("\\", "/") for p in root.rglob("*") if p.is_file())
+
+
+def _fake_completed_process(rc: int, out: str = "", err: str = "") -> subprocess.CompletedProcess[str]:
+    # CompletedProcess[str] is sufficient for our usage in ui_server._run_cli
+    return subprocess.CompletedProcess(args=["x"], returncode=rc, stdout=out, stderr=err)
 
 
 @pytest.mark.timeout(10)
@@ -219,6 +236,89 @@ def test_ui_phase0_tree_includes_nested_files(tmp_path: Path) -> None:
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+@pytest.mark.timeout(10)
+def test_ui_phase1a_status_endpoint_pass_fail_skip(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """
+    Deterministically stub subprocess.run so /api/status doesn't depend on a real governed run.
+    """
+    run_dir = _make_minimal_run_dir(tmp_path)
+
+    calls: list[list[str]] = []
+
+    def _fake_run(
+        argv: list[str],
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, timeout
+        calls.append(list(argv))
+
+        # argv looks like: [py, -m, crimex.cli, <cmd>, ...]
+        cmd = argv[3] if len(argv) > 3 else ""
+        if cmd == "verify-run":
+            return _fake_completed_process(0, out="OK: verified 7 artifact(s)")
+        if cmd == "qa":
+            return _fake_completed_process(1, out="QA FAIL", err="some rule violated")
+        if cmd == "validate":
+            return _fake_completed_process(0, out="VALIDATE PASS")
+        return _fake_completed_process(2, err="unknown")
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run)
+
+    httpd, port = _start_server(run_dir, cmd_timeout_s=0.25)
+    try:
+        st = _http_get_json(f"http://127.0.0.1:{port}/api/status")
+        checks = st["checks"]
+
+        assert checks["verify_run"]["status"] == "PASS"
+        assert "OK:" in (checks["verify_run"]["summary"] or "")
+
+        assert checks["qa"]["status"] == "FAIL"
+        assert "some rule violated" in (checks["qa"]["summary"] or "")
+
+        assert checks["validate"]["status"] == "PASS"
+
+        # ensure we actually invoked the expected commands deterministically
+        invoked = [c[3] for c in calls if len(c) > 3]
+        assert invoked == ["verify-run", "qa", "validate"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    # Now SKIP behavior when facts missing (no subprocess calls for qa/validate)
+    run_dir2 = _make_minimal_run_dir(tmp_path / "b")
+    (run_dir2 / "facts" / "facts.jsonl").unlink()
+
+    calls2: list[list[str]] = []
+
+    def _fake_run2(
+        argv: list[str],
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, timeout
+        calls2.append(list(argv))
+        return _fake_completed_process(0, out="OK: verified 1 artifact(s)")
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run2)
+
+    httpd2, port2 = _start_server(run_dir2, cmd_timeout_s=0.25)
+    try:
+        st2 = _http_get_json(f"http://127.0.0.1:{port2}/api/status")
+        checks2 = st2["checks"]
+        assert checks2["verify_run"]["status"] == "PASS"
+        assert checks2["qa"]["status"] == "SKIP"
+        assert checks2["validate"]["status"] == "SKIP"
+
+        invoked2 = [c[3] for c in calls2 if len(c) > 3]
+        assert invoked2 == ["verify-run"]
+    finally:
+        httpd2.shutdown()
+        httpd2.server_close()
 
 
 @pytest.mark.timeout(10)
