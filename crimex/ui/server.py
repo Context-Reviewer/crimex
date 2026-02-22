@@ -248,7 +248,7 @@ INDEX_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>crimex UI (Phase 1D) - Run Viewer</title>
+  <title>crimex UI (Phase 1E) - Run Viewer</title>
   <style>
     :root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
     body { margin: 0; padding: 0; background: #0b0d10; color: #e9eef5; }
@@ -313,6 +313,17 @@ INDEX_HTML = """<!doctype html>
     .filter-row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
     .filter-row label { display:flex; gap:6px; align-items:center; font-size:11px; color:#cfe0f5; }
     .filter-row input { accent-color:#2b7cff; }
+    .search-input {
+      flex:1;
+      min-width:180px;
+      max-width:360px;
+      background:#0b0d10;
+      border:1px solid #1c2430;
+      color:#e9eef5;
+      border-radius:8px;
+      padding:6px 10px;
+      font-size:12px;
+    }
     .fact-pill {
       display:inline-block;
       min-width:18px;
@@ -328,7 +339,7 @@ INDEX_HTML = """<!doctype html>
 </head>
 <body>
 <header>
-  <h1>crimex UI (Phase 1D) - Run Viewer</h1>
+  <h1>crimex UI (Phase 1E) - Run Viewer</h1>
   <div class="sub">
     Read-only. Deterministic listings. No writes to run directory.
     <span class="pill mono" id="baseDirPill"></span>
@@ -381,6 +392,11 @@ INDEX_HTML = """<!doctype html>
       <div class="row">
         <button id="runsOverviewBtn">Refresh overview</button>
         <span class="muted small" id="runsOverviewMeta"></span>
+      </div>
+      <div style="height:10px"></div>
+      <div class="row">
+        <input id="runsSearch" class="search-input" type="text" placeholder="Search runs..." />
+        <span class="muted small" id="runsCounts"></span>
       </div>
       <div style="height:10px"></div>
       <div class="filter-row">
@@ -515,6 +531,28 @@ INDEX_HTML = """<!doctype html>
     });
   }
 
+  function applyRunsOverviewSearch(runs) {
+    const el = $("runsSearch");
+    const q = (el && el.value ? el.value : "").trim().toLowerCase();
+    if (!q) return runs;
+    return runs.filter((r) => ((r.run || "").toLowerCase().includes(q)));
+  }
+
+  function computeRunsCounts(allRuns, shownRuns) {
+    const counts = { total: 0, fail: 0, skip: 0, pass: 0, showing: 0 };
+    const arrAll = Array.isArray(allRuns) ? allRuns : [];
+    const arrShown = Array.isArray(shownRuns) ? shownRuns : [];
+    counts.total = arrAll.length;
+    for (const r of arrAll) {
+      const st = overallStatus(r.checks || {});
+      if (st === "FAIL") counts.fail += 1;
+      else if (st === "PASS") counts.pass += 1;
+      else counts.skip += 1;
+    }
+    counts.showing = arrShown.length;
+    return counts;
+  }
+
   function renderRunsOverviewTable(runs, totalCount) {
     const body = $("runsOverviewBody");
     body.innerHTML = "";
@@ -587,11 +625,19 @@ INDEX_HTML = """<!doctype html>
 
   function applyRunsOverviewView() {
     const data = runsOverviewData || {};
-    const totalCount = Array.isArray(data.runs) ? data.runs.length : 0;
-    let runs = Array.isArray(data.runs) ? data.runs.slice() : [];
-    runs.sort(compareRuns);
-    runs = applyRunsOverviewFilters(runs);
-    renderRunsOverviewTable(runs, totalCount);
+    const allRuns = Array.isArray(data.runs) ? data.runs.slice() : [];
+    const sorted = allRuns.slice();
+    sorted.sort(compareRuns);
+    let runs = applyRunsOverviewFilters(sorted);
+    runs = applyRunsOverviewSearch(runs);
+    const counts = computeRunsCounts(allRuns, runs);
+    const countsEl = $("runsCounts");
+    if (countsEl) {
+      countsEl.textContent =
+        `Total: ${counts.total} | FAIL: ${counts.fail} | SKIP: ${counts.skip} | PASS: ${counts.pass} | ` +
+        `Showing: ${counts.showing}`;
+    }
+    renderRunsOverviewTable(runs, counts.total);
   }
 
   function renderGov(checks) {
@@ -792,6 +838,13 @@ INDEX_HTML = """<!doctype html>
         applyRunsOverviewView();
       });
     }
+  }
+
+  const searchEl = $("runsSearch");
+  if (searchEl) {
+    searchEl.addEventListener("input", () => {
+      applyRunsOverviewView();
+    });
   }
 
   // boot
