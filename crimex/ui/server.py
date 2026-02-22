@@ -316,6 +316,30 @@ INDEX_HTML = """<!doctype html>
     .runs-table th { text-align:left; font-size:11px; color:#9fb0c4; padding:4px 0; }
     .runs-table td { padding:4px 0; border-top:1px solid #1c2430; vertical-align:middle; }
     .runs-table .run-name { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .details-cell { background:#0c1117; padding:8px; }
+    .details-table { width:100%; border-collapse: collapse; font-size:11px; }
+    .details-table th {
+      text-align:left;
+      font-size:10px;
+      color:#9fb0c4;
+      padding:4px 6px;
+      border-bottom:1px solid #1c2430;
+    }
+    .details-table td { padding:4px 6px; border-top:1px solid #1c2430; vertical-align:top; }
+    .details-fail td { background:#1a1114; }
+    .details-summary { display:flex; gap:8px; align-items:center; }
+    .details-summary .summary-text { flex:1; min-width:0; word-break: break-word; }
+    .details-copy {
+      background:#111827;
+      border:1px solid #24314a;
+      color:#cfe0f5;
+      border-radius:6px;
+      padding:2px 6px;
+      font-size:10px;
+      cursor:pointer;
+    }
+    .details-copy:hover { border-color:#2b7cff; }
+    .details-copy-msg { font-size:10px; color:#9fb0c4; min-width:60px; }
     .filter-row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
     .filter-row label { display:flex; gap:6px; align-items:center; font-size:11px; color:#cfe0f5; }
     .filter-row input { accent-color:#2b7cff; }
@@ -493,6 +517,44 @@ INDEX_HTML = """<!doctype html>
     return "badge skip";
   }
 
+  function showCopyMessage(el, text) {
+    if (!el) return;
+    if (el._timerId) {
+      clearTimeout(el._timerId);
+    }
+    el.textContent = text;
+    el._timerId = setTimeout(() => {
+      el.textContent = "";
+    }, 1200);
+  }
+
+  async function copyTextToClipboard(text, msgEl) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        showCopyMessage(msgEl, "copied");
+        return;
+      } catch (err) {
+        // fall through to deterministic fallback
+      }
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "absolute";
+      ta.style.left = "-9999px";
+      ta.style.top = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      showCopyMessage(msgEl, ok ? "copied" : "copy failed");
+    } catch (err) {
+      showCopyMessage(msgEl, "copy failed");
+    }
+  }
+
   const STATUS_RANK = { "FAIL": 0, "SKIP": 1, "PASS": 2 };
 
   function overallStatus(checks) {
@@ -646,26 +708,87 @@ INDEX_HTML = """<!doctype html>
 
       const tdDetails = document.createElement("td");
       tdDetails.colSpan = 8;
-      tdDetails.style.background = "#0c1117";
-      tdDetails.style.padding = "8px";
+      tdDetails.className = "details-cell";
 
-      const container = document.createElement("div");
-      container.className = "mono small";
+      const table = document.createElement("table");
+      table.className = "details-table";
+
+      const thead = document.createElement("thead");
+      const htr = document.createElement("tr");
+      const headers = ["check", "status", "exit_code", "elapsed_ms", "summary"];
+      for (const h of headers) {
+        const th = document.createElement("th");
+        th.textContent = h;
+        htr.appendChild(th);
+      }
+      thead.appendChild(htr);
+      table.appendChild(thead);
+
+      const tbody = document.createElement("tbody");
 
       for (const name of names) {
         const ch = checks[name] || {};
-        const block = document.createElement("div");
-        block.style.marginBottom = "6px";
-        block.innerHTML =
-          `<strong>${name}</strong><br>` +
-          `status: ${ch.status || "SKIP"}<br>` +
-          `exit_code: ${ch.exit_code ?? ""}<br>` +
-          `elapsed_ms: ${ch.elapsed_ms ?? ""}<br>` +
-          `summary: ${ch.summary || ""}`;
-        container.appendChild(block);
+        const status = ch.status || "SKIP";
+        const exitCode = ch.exit_code == null ? "-" : String(ch.exit_code);
+        const elapsed = ch.elapsed_ms == null ? 0 : ch.elapsed_ms;
+        const summaryText = ch.summary || "";
+
+        const row = document.createElement("tr");
+        if (status === "FAIL") {
+          row.className = "details-fail";
+        }
+
+        const tdName = document.createElement("td");
+        tdName.className = "mono";
+        tdName.textContent = name;
+
+        const tdStatus = document.createElement("td");
+        const b = document.createElement("span");
+        b.className = badgeClass(status);
+        b.textContent = status;
+        tdStatus.appendChild(b);
+
+        const tdExit = document.createElement("td");
+        tdExit.textContent = exitCode;
+
+        const tdElapsed = document.createElement("td");
+        tdElapsed.textContent = String(elapsed);
+
+        const tdSummary = document.createElement("td");
+        const sumWrap = document.createElement("div");
+        sumWrap.className = "details-summary";
+
+        const sumText = document.createElement("span");
+        sumText.className = "summary-text";
+        sumText.textContent = summaryText;
+
+        const copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.className = "details-copy";
+        copyBtn.textContent = "Copy";
+
+        const msg = document.createElement("span");
+        msg.className = "details-copy-msg";
+
+        copyBtn.addEventListener("click", async () => {
+          await copyTextToClipboard(summaryText, msg);
+        });
+
+        sumWrap.appendChild(sumText);
+        sumWrap.appendChild(copyBtn);
+        sumWrap.appendChild(msg);
+        tdSummary.appendChild(sumWrap);
+
+        row.appendChild(tdName);
+        row.appendChild(tdStatus);
+        row.appendChild(tdExit);
+        row.appendChild(tdElapsed);
+        row.appendChild(tdSummary);
+        tbody.appendChild(row);
       }
 
-      tdDetails.appendChild(container);
+      table.appendChild(tbody);
+      tdDetails.appendChild(table);
       trDetails.appendChild(tdDetails);
       body.appendChild(trDetails);
     }
