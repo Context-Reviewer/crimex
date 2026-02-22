@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # ----------------------------
 # Core helpers (deterministic)
@@ -84,10 +84,15 @@ def _build_tree(root: Path) -> dict[str, Any]:
     """
 
     def add_node(tree: dict[str, Any], parts: list[str], is_file: bool) -> None:
-        cur = tree
+        cur: dict[str, Any] = tree
         for i, part in enumerate(parts):
-            children = cur.setdefault("children", [])
-            found = None
+            raw_children = cur.get("children")
+            if isinstance(raw_children, list):
+                children = cast(list[dict[str, Any]], raw_children)
+            else:
+                children = []
+                cur["children"] = children
+            found: dict[str, Any] | None = None
             for ch in children:
                 if ch["name"] == part:
                     found = ch
@@ -100,6 +105,7 @@ def _build_tree(root: Path) -> dict[str, Any]:
                 children.append(found)
                 # keep children sorted deterministically: dirs first, then files; name lexicographic
                 children.sort(key=lambda n: (n["type"] != "dir", n["name"]))
+            assert found is not None
             cur = found
 
     tree: dict[str, Any] = {"type": "dir", "name": "", "children": []}
@@ -579,10 +585,11 @@ INDEX_HTML = """<!doctype html>
 
     for (const r of runs) {
       const tr = document.createElement("tr");
+      const runId = r.run || "";
 
       const tdRun = document.createElement("td");
       tdRun.className = "run-name";
-      tdRun.textContent = r.run || "";
+      tdRun.textContent = runId;
       tr.appendChild(tdRun);
 
       tr.appendChild(factCell(r.has_manifest));
@@ -591,12 +598,22 @@ INDEX_HTML = """<!doctype html>
 
       const checks = r.checks || {};
       const names = ["verify_run", "qa", "validate"];
+
+      function toggleDetails() {
+        const row = document.getElementById(`details-${runId}`);
+        if (row) {
+          row.style.display = row.style.display === "none" ? "" : "none";
+        }
+      }
+
       for (const name of names) {
         const td = document.createElement("td");
         const ch = checks[name] || {};
         const b = document.createElement("span");
         b.className = badgeClass(ch.status || "SKIP");
         b.textContent = ch.status || "SKIP";
+        b.style.cursor = "pointer";
+        b.addEventListener("click", toggleDetails);
         td.appendChild(b);
         tr.appendChild(td);
       }
@@ -607,11 +624,13 @@ INDEX_HTML = """<!doctype html>
       btn.addEventListener("click", async () => {
         const sel = $("runSelect");
         if (sel) {
-          const values = new Set(Array.from(sel.options).map(o => o.value));
-          if (!values.has(r.run || "")) {
+          const values = new Set(
+            Array.from(sel.options).map((o) => o.value),
+          );
+          if (!values.has(runId)) {
             await loadRuns();
           }
-          sel.value = r.run || "";
+          sel.value = runId;
         }
         await refreshSummaryAndTree();
         await refreshStatus();
@@ -620,6 +639,35 @@ INDEX_HTML = """<!doctype html>
       tr.appendChild(tdOpen);
 
       body.appendChild(tr);
+
+      const trDetails = document.createElement("tr");
+      trDetails.id = `details-${runId}`;
+      trDetails.style.display = "none";
+
+      const tdDetails = document.createElement("td");
+      tdDetails.colSpan = 8;
+      tdDetails.style.background = "#0c1117";
+      tdDetails.style.padding = "8px";
+
+      const container = document.createElement("div");
+      container.className = "mono small";
+
+      for (const name of names) {
+        const ch = checks[name] || {};
+        const block = document.createElement("div");
+        block.style.marginBottom = "6px";
+        block.innerHTML =
+          `<strong>${name}</strong><br>` +
+          `status: ${ch.status || "SKIP"}<br>` +
+          `exit_code: ${ch.exit_code ?? ""}<br>` +
+          `elapsed_ms: ${ch.elapsed_ms ?? ""}<br>` +
+          `summary: ${ch.summary || ""}`;
+        container.appendChild(block);
+      }
+
+      tdDetails.appendChild(container);
+      trDetails.appendChild(tdDetails);
+      body.appendChild(trDetails);
     }
   }
 
@@ -871,6 +919,11 @@ class UiConfig:
     runs_status_budget_ms: int
 
 
+class UiHTTPServer(ThreadingHTTPServer):
+    _cfg: UiConfig
+    _verbose: bool
+
+
 def _compute_governance_checks(run_dir: Path, cfg: UiConfig) -> dict[str, Any]:
     facts_path = run_dir / "facts" / "facts.jsonl"
 
@@ -946,13 +999,16 @@ class UiHandler(BaseHTTPRequestHandler):
     def _send_text(self, status: int, text: str, *, content_type: str = "text/plain; charset=utf-8") -> None:
         self._send(status, text.encode("utf-8"), content_type)
 
-    def log_message(self, fmt: str, *args: Any) -> None:
-        if hasattr(self.server, "_verbose") and self.server._verbose:
-            super().log_message(fmt, *args)
+    def _server(self) -> UiHTTPServer:
+        return cast(UiHTTPServer, self.server)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        if hasattr(self.server, "_verbose") and self._server()._verbose:
+            super().log_message(format, *args)
 
     @property
     def cfg(self) -> UiConfig:
-        return self.server._cfg
+        return self._server()._cfg
 
     def _selected_run_dir_from_query(self, query: str) -> tuple[Path, str | None]:
         """
@@ -1279,7 +1335,7 @@ def main(argv: list[str] | None = None) -> int:
         runs_status_budget_ms=int(args.runs_status_budget_ms),
     )
 
-    httpd = ThreadingHTTPServer((cfg.host, cfg.port), UiHandler)
+    httpd = UiHTTPServer((cfg.host, cfg.port), UiHandler)
     httpd._cfg = cfg
     httpd._verbose = bool(args.verbose)
 
