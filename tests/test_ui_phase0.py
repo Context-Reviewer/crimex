@@ -686,6 +686,74 @@ def test_ui_phase1d_overview_budget_skip_includes_meta(
 
 
 @pytest.mark.timeout(10)
+def test_ui_phase1i_overview_includes_abs_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    base = tmp_path / "runs"
+    base.mkdir()
+    run_a = _make_minimal_run_dir(base, "runA")
+    _ = _make_minimal_run_dir(base, "runB")
+
+    def _fake_run(
+        argv: list[str],
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, timeout
+        return _fake_completed_process(0, out="OK")
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run)
+
+    httpd, port = _start_server(run_a, base_dir=base, cmd_timeout_s=0.25, runs_status_budget_ms=10_000)
+    try:
+        data = _http_get_json(f"http://127.0.0.1:{port}/api/runs/overview")
+        for item in data["runs"]:
+            assert item["abs_run_dir"] is not None
+            assert Path(item["abs_run_dir"]).is_absolute()
+            assert item["abs_manifest_path"].endswith("run_manifest.json")
+            assert item["abs_facts_path"].endswith("facts.jsonl")
+            assert item["abs_bundle_path"].endswith("run_bundle.zip")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.mark.timeout(10)
+def test_ui_phase1i_overview_abs_paths_missing_facts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    base = tmp_path / "runs"
+    base.mkdir()
+    run_a = _make_minimal_run_dir(base, "runA")
+    run_b = _make_minimal_run_dir(base, "runB")
+    (run_b / "facts" / "facts.jsonl").unlink()
+
+    def _fake_run(
+        argv: list[str],
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, timeout
+        return _fake_completed_process(0, out="OK")
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run)
+
+    httpd, port = _start_server(run_a, base_dir=base, cmd_timeout_s=0.25, runs_status_budget_ms=10_000)
+    try:
+        data = _http_get_json(f"http://127.0.0.1:{port}/api/runs/overview")
+        run_b_item = next(item for item in data["runs"] if item["run"] == "runB")
+        assert run_b_item["has_facts"] is False
+        assert run_b_item["abs_facts_path"] is None
+        assert run_b_item["abs_manifest_path"].endswith("run_manifest.json")
+        assert run_b_item["abs_bundle_path"].endswith("run_bundle.zip")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.mark.timeout(10)
 def test_ui_phase1h_overview_copy_bundle_pass_and_collapse(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

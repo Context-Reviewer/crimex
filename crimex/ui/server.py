@@ -244,6 +244,28 @@ def _format_copy_bundle(run: str, checks: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _abs_under(base: Path, target: Path) -> str | None:
+    try:
+        abs_target = target.resolve(strict=False)
+    except Exception:
+        return None
+    if not _is_under(base, abs_target):
+        return None
+    return str(abs_target)
+
+
+def _abs_dir_if(base: Path, target: Path) -> str | None:
+    if not target.exists() or not target.is_dir():
+        return None
+    return _abs_under(base, target)
+
+
+def _abs_file_if(base: Path, target: Path) -> str | None:
+    if not target.exists() or not target.is_file():
+        return None
+    return _abs_under(base, target)
+
+
 def _count_files(tree: dict[str, Any]) -> int:
     if tree.get("type") == "file":
         return 1
@@ -276,11 +298,21 @@ def _base_py_cli() -> list[str]:
 
 
 def _run_meta(base: Path, d: Path) -> dict[str, Any]:
+    manifest_path = d / "run_manifest.json"
+    facts_path = d / "facts" / "facts.jsonl"
+    bundle_path = d / "run_bundle.zip"
+    has_manifest = manifest_path.exists()
+    has_facts = facts_path.exists()
+    has_bundle = bundle_path.exists()
     return {
         "run": _as_posix_rel(base, d),
-        "has_manifest": (d / "run_manifest.json").exists(),
-        "has_facts": (d / "facts" / "facts.jsonl").exists(),
-        "has_bundle": (d / "run_bundle.zip").exists(),
+        "has_manifest": has_manifest,
+        "has_facts": has_facts,
+        "has_bundle": has_bundle,
+        "abs_run_dir": _abs_dir_if(base, d),
+        "abs_manifest_path": _abs_file_if(base, manifest_path) if has_manifest else None,
+        "abs_facts_path": _abs_file_if(base, facts_path) if has_facts else None,
+        "abs_bundle_path": _abs_file_if(base, bundle_path) if has_bundle else None,
     }
 
 
@@ -380,6 +412,10 @@ INDEX_HTML = """<!doctype html>
     }
     .details-copy:hover { border-color:#2b7cff; }
     .details-copy-msg { font-size:10px; color:#9fb0c4; min-width:60px; }
+    .actions-details { display:inline-block; }
+    .actions-details summary { cursor:pointer; font-size:11px; color:#cfe0f5; }
+    .actions-list { display:flex; flex-direction:column; gap:4px; margin-top:6px; }
+    .actions-list button { padding:4px 8px; font-size:11px; }
     .filter-row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
     .filter-row label { display:flex; gap:6px; align-items:center; font-size:11px; color:#cfe0f5; }
     .filter-row input { accent-color:#2b7cff; }
@@ -486,7 +522,7 @@ INDEX_HTML = """<!doctype html>
             <th>verify</th>
             <th>qa</th>
             <th>validate</th>
-            <th></th>
+            <th>actions</th>
           </tr>
         </thead>
         <tbody id="runsOverviewBody">
@@ -608,6 +644,46 @@ INDEX_HTML = """<!doctype html>
     if (lastErr && lastErr.message) return lastErr.message;
     if (lastErr) return String(lastErr);
     return "copy failed";
+  }
+
+  const SUMMARY_MAX = 120;
+
+  function collapseWs(text) {
+    return String(text || "").replace(/\\s+/g, " ").trim();
+  }
+
+  function truncateSummary(text) {
+    if (text.length <= SUMMARY_MAX) return text;
+    return text.slice(0, SUMMARY_MAX) + "…";
+  }
+
+  function buildFailureSummary(runRel, checks) {
+    const names = ["verify_run", "qa", "validate"];
+    const overall = overallStatus(checks || {});
+    const parts = [`${runRel} | overall=${overall}`];
+    for (const name of names) {
+      const ch = (checks && checks[name]) ? checks[name] : {};
+      const status = ch.status || "SKIP";
+      const summary = truncateSummary(collapseWs(ch.summary || ""));
+      parts.push(`${name}=${status} (${summary})`);
+    }
+    return parts.join(" | ");
+  }
+
+  async function revealFile(runRel, relPath) {
+    $("statusText").textContent = "Loading file...";
+    try {
+      const q = encodeURIComponent(relPath);
+      const r = encodeURIComponent(runRel || "");
+      const data = await api(`/api/file?path=${q}&run=${r}`);
+      $("filePath").textContent = data.path;
+      $("filePre").textContent = data.content;
+    } catch (e) {
+      $("filePath").textContent = relPath;
+      $("filePre").textContent = `ERROR: ${e}`;
+    } finally {
+      $("statusText").textContent = "";
+    }
   }
 
   const STATUS_RANK = { "FAIL": 0, "SKIP": 1, "PASS": 2 };
@@ -735,6 +811,20 @@ INDEX_HTML = """<!doctype html>
         tr.appendChild(td);
       }
 
+      async function copyAndNotify(text) {
+        const err = await copyTextToClipboard(text);
+        if (err) {
+          setRunsOverviewMeta(`Copy failed: ${err}`);
+        } else {
+          setRunsOverviewMeta("Copied");
+        }
+      }
+
+      async function copyOrMissing(text, missingLabel) {
+        const value = text || `MISSING: ${missingLabel}`;
+        await copyAndNotify(value);
+      }
+
       const tdOpen = document.createElement("td");
       const row = document.createElement("div");
       row.className = "row";
@@ -773,6 +863,56 @@ INDEX_HTML = """<!doctype html>
         }
       });
       row.appendChild(copyBtn);
+
+      const actions = document.createElement("details");
+      actions.className = "actions-details";
+      const actionsSummary = document.createElement("summary");
+      actionsSummary.textContent = "Quick Links";
+      actions.appendChild(actionsSummary);
+
+      const actionsList = document.createElement("div");
+      actionsList.className = "actions-list";
+
+      function addAction(label, onClick, disabled) {
+        const btnAction = document.createElement("button");
+        btnAction.type = "button";
+        btnAction.textContent = label;
+        if (disabled) {
+          btnAction.disabled = true;
+        } else {
+          btnAction.addEventListener("click", onClick);
+        }
+        actionsList.appendChild(btnAction);
+      }
+
+      const relManifest = "run_manifest.json";
+      const relFacts = "facts/facts.jsonl";
+      const relBundle = "run_bundle.zip";
+
+      addAction("Copy Run Path", async () => {
+        await copyOrMissing(r.abs_run_dir || "", runId || "(default)");
+      });
+      addAction("Copy Manifest Path", async () => {
+        await copyOrMissing(r.abs_manifest_path || "", relManifest);
+      });
+      addAction("Copy Facts Path", async () => {
+        await copyOrMissing(r.abs_facts_path || "", relFacts);
+      });
+      addAction("Copy Bundle Path", async () => {
+        await copyOrMissing(r.abs_bundle_path || "", relBundle);
+      });
+      addAction("Copy Failure Summary", async () => {
+        await copyAndNotify(buildFailureSummary(runId, checks));
+      });
+      addAction("Reveal Manifest", async () => {
+        await revealFile(runId, relManifest);
+      }, !r.abs_manifest_path);
+      addAction("Reveal Facts", async () => {
+        await revealFile(runId, relFacts);
+      }, !r.abs_facts_path);
+
+      actions.appendChild(actionsList);
+      row.appendChild(actions);
 
       tdOpen.appendChild(row);
       tr.appendChild(tdOpen);
