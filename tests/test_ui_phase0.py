@@ -844,3 +844,95 @@ def test_ui_phase1h_overview_copy_bundle_fail_overall(
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_ui_phase1j_diag_payload_pass() -> None:
+    run_row = {
+        "run": "runA",
+        "has_manifest": True,
+        "has_facts": True,
+        "has_bundle": True,
+        "checks": {
+            "verify_run": {
+                "status": "PASS",
+                "exit_code": 0,
+                "summary": "OK",
+                "elapsed_ms": 5,
+            },
+            "qa": {
+                "status": "PASS",
+                "exit_code": 0,
+                "summary": "QA ok",
+                "elapsed_ms": 7,
+            },
+            "validate": {
+                "status": "PASS",
+                "exit_code": 0,
+                "summary": "VAL ok",
+                "elapsed_ms": 9,
+            },
+        },
+    }
+    payload = ui_server._build_diag_payload(run_row)
+    expected = (
+        '{"run":"runA","overall":"PASS","facts":{"has_manifest":true,"has_facts":true,'
+        '"has_bundle":true},"checks":{"verify_run":{"status":"PASS","exit_code":0,'
+        '"summary":"OK","elapsed_ms":5},"qa":{"status":"PASS","exit_code":0,'
+        '"summary":"QA ok","elapsed_ms":7},"validate":{"status":"PASS","exit_code":0,'
+        '"summary":"VAL ok","elapsed_ms":9}},"paths":{"run_rel":"runA",'
+        '"manifest":"runA/run_manifest.json","facts":"runA/facts/facts.jsonl",'
+        '"bundle":"runA/run_bundle.zip"}}'
+    )
+    assert payload == expected
+
+
+def test_ui_phase1j_diag_payload_fail_overall() -> None:
+    run_row = {
+        "run": "runB",
+        "has_manifest": True,
+        "has_facts": True,
+        "has_bundle": True,
+        "checks": {
+            "verify_run": {
+                "status": "PASS",
+                "exit_code": 0,
+                "summary": "OK",
+                "elapsed_ms": 1,
+            },
+            "qa": {
+                "status": "FAIL",
+                "exit_code": 2,
+                "summary": "bad",
+                "elapsed_ms": 3,
+            },
+            "validate": {
+                "status": "PASS",
+                "exit_code": 0,
+                "summary": "OK",
+                "elapsed_ms": 2,
+            },
+        },
+    }
+    payload = ui_server._build_diag_payload(run_row)
+    assert '"overall":"FAIL"' in payload
+    assert '"qa":{"status":"FAIL","exit_code":2,"summary":"bad","elapsed_ms":3}' in payload
+
+
+def test_ui_phase1j_diag_payload_skip_defaults() -> None:
+    run_row = {
+        "run": "runC",
+        "has_manifest": False,
+        "has_facts": False,
+        "has_bundle": False,
+        "checks": {},
+    }
+    payload = ui_server._build_diag_payload(run_row)
+    expected = (
+        '{"run":"runC","overall":"SKIP","facts":{"has_manifest":false,"has_facts":false,'
+        '"has_bundle":false},"checks":{"verify_run":{"status":"SKIP","exit_code":null,'
+        '"summary":"","elapsed_ms":0},"qa":{"status":"SKIP","exit_code":null,"summary":"",'
+        '"elapsed_ms":0},"validate":{"status":"SKIP","exit_code":null,"summary":"",'
+        '"elapsed_ms":0}},"paths":{"run_rel":"runC","manifest":"runC/run_manifest.json",'
+        '"facts":"runC/facts/facts.jsonl","bundle":"runC/run_bundle.zip"}}'
+    )
+    assert payload == expected

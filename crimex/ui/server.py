@@ -244,6 +244,58 @@ def _format_copy_bundle(run: str, checks: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _build_diag_payload(run_row: dict[str, Any]) -> str:
+    run = str(run_row.get("run") or "")
+    checks = run_row.get("checks") or {}
+    overall = _overall_status(checks)
+
+    def _diag_check(name: str) -> dict[str, Any]:
+        ch = checks.get(name, {}) if checks else {}
+        status = ch.get("status") or "SKIP"
+        exit_code_raw = ch.get("exit_code", None)
+        if exit_code_raw is None:
+            exit_code = None
+        else:
+            try:
+                exit_code = int(exit_code_raw)
+            except Exception:
+                exit_code = None
+        elapsed_raw = ch.get("elapsed_ms", None)
+        try:
+            elapsed_ms = 0 if elapsed_raw is None else int(elapsed_raw)
+        except Exception:
+            elapsed_ms = 0
+        summary = ch.get("summary") or ""
+        return {
+            "status": status,
+            "exit_code": exit_code,
+            "summary": str(summary),
+            "elapsed_ms": elapsed_ms,
+        }
+
+    payload = {
+        "run": run,
+        "overall": overall,
+        "facts": {
+            "has_manifest": bool(run_row.get("has_manifest")),
+            "has_facts": bool(run_row.get("has_facts")),
+            "has_bundle": bool(run_row.get("has_bundle")),
+        },
+        "checks": {
+            "verify_run": _diag_check("verify_run"),
+            "qa": _diag_check("qa"),
+            "validate": _diag_check("validate"),
+        },
+        "paths": {
+            "run_rel": run,
+            "manifest": f"{run}/run_manifest.json",
+            "facts": f"{run}/facts/facts.jsonl",
+            "bundle": f"{run}/run_bundle.zip",
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=False, separators=(",", ":"))
+
+
 def _abs_under(base: Path, target: Path) -> str | None:
     try:
         abs_target = target.resolve(strict=False)
@@ -670,6 +722,54 @@ INDEX_HTML = """<!doctype html>
     return parts.join(" | ");
   }
 
+  function normalizeDiagCheck(ch) {
+    const status = (ch && ch.status) ? ch.status : "SKIP";
+    const exitRaw = ch ? ch.exit_code : null;
+    let exitCode = null;
+    if (exitRaw !== null && exitRaw !== undefined) {
+      const num = Number(exitRaw);
+      exitCode = Number.isFinite(num) ? num : null;
+    }
+    const elapsedRaw = ch ? ch.elapsed_ms : null;
+    let elapsedMs = 0;
+    if (elapsedRaw !== null && elapsedRaw !== undefined) {
+      const num = Number(elapsedRaw);
+      elapsedMs = Number.isFinite(num) ? num : 0;
+    }
+    return {
+      status: status,
+      exit_code: exitCode,
+      summary: String(ch && ch.summary ? ch.summary : ""),
+      elapsed_ms: elapsedMs,
+    };
+  }
+
+  function buildDiagnostics(runRow) {
+    const runRel = runRow && runRow.run ? String(runRow.run) : "";
+    const checks = runRow && runRow.checks ? runRow.checks : {};
+    const payload = {
+      run: runRel,
+      overall: overallStatus(checks || {}),
+      facts: {
+        has_manifest: !!(runRow && runRow.has_manifest),
+        has_facts: !!(runRow && runRow.has_facts),
+        has_bundle: !!(runRow && runRow.has_bundle),
+      },
+      checks: {
+        verify_run: normalizeDiagCheck(checks.verify_run),
+        qa: normalizeDiagCheck(checks.qa),
+        validate: normalizeDiagCheck(checks.validate),
+      },
+      paths: {
+        run_rel: runRel,
+        manifest: `${runRel}/run_manifest.json`,
+        facts: `${runRel}/facts/facts.jsonl`,
+        bundle: `${runRel}/run_bundle.zip`,
+      },
+    };
+    return JSON.stringify(payload);
+  }
+
   async function revealFile(runRel, relPath) {
     $("statusText").textContent = "Loading file...";
     try {
@@ -855,14 +955,17 @@ INDEX_HTML = """<!doctype html>
           setRunsOverviewMeta("Copy failed: missing bundle");
           return;
         }
-        const err = await copyTextToClipboard(text);
-        if (err) {
-          setRunsOverviewMeta(`Copy failed: ${err}`);
-        } else {
-          setRunsOverviewMeta("Copied");
-        }
+        await copyAndNotify(text);
       });
       row.appendChild(copyBtn);
+
+      const diagBtn = document.createElement("button");
+      diagBtn.textContent = "Copy diag";
+      diagBtn.addEventListener("click", async () => {
+        const payload = buildDiagnostics(r);
+        await copyAndNotify(payload);
+      });
+      row.appendChild(diagBtn);
 
       const actions = document.createElement("details");
       actions.className = "actions-details";
