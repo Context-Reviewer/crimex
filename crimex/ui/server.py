@@ -204,6 +204,46 @@ def _status_from_run_result(res: dict[str, Any]) -> tuple[str, str]:
     return "FAIL", summary
 
 
+def _collapse_ws(s: str) -> str:
+    return " ".join((s or "").split())
+
+
+def _overall_status(checks: dict[str, Any]) -> str:
+    names = ["verify_run", "qa", "validate"]
+    has_skip = False
+    for name in names:
+        ch = checks.get(name, {}) if checks else {}
+        st = ch.get("status") or "SKIP"
+        if st == "FAIL":
+            return "FAIL"
+        if st != "PASS":
+            has_skip = True
+    return "SKIP" if has_skip else "PASS"
+
+
+def _format_copy_bundle(run: str, checks: dict[str, Any]) -> str:
+    names = ["verify_run", "qa", "validate"]
+    overall = _overall_status(checks)
+    lines = [f"crimex run: {run}", f"overall: {overall}"]
+    for name in names:
+        ch = checks.get(name, {}) if checks else {}
+        status = ch.get("status") or "SKIP"
+        exit_code = ch.get("exit_code", None)
+        exit_str = "null" if exit_code is None else str(exit_code)
+        elapsed_raw = ch.get("elapsed_ms", None)
+        try:
+            elapsed_val = 0 if elapsed_raw is None else int(elapsed_raw)
+        except Exception:
+            elapsed_val = 0
+        summary = _collapse_ws(str(ch.get("summary") or ""))
+        line = (
+            f"{name}: {status} exit={exit_str} "
+            f"ms={elapsed_val} summary={summary}"
+        )
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _count_files(tree: dict[str, Any]) -> int:
     if tree.get("type") == "file":
         return 1
@@ -517,6 +557,18 @@ INDEX_HTML = """<!doctype html>
     return "badge skip";
   }
 
+  function setRunsOverviewMeta(text) {
+    const el = $("runsOverviewMeta");
+    if (!el) return;
+    if (el._timerId) {
+      clearTimeout(el._timerId);
+    }
+    el.textContent = text;
+    el._timerId = setTimeout(() => {
+      el.textContent = "";
+    }, 1200);
+  }
+
   function showCopyMessage(el, text) {
     if (!el) return;
     if (el._timerId) {
@@ -528,14 +580,14 @@ INDEX_HTML = """<!doctype html>
     }, 1200);
   }
 
-  async function copyTextToClipboard(text, msgEl) {
+  async function copyTextToClipboard(text) {
+    let lastErr = null;
     if (navigator.clipboard && navigator.clipboard.writeText) {
       try {
         await navigator.clipboard.writeText(text);
-        showCopyMessage(msgEl, "copied");
-        return;
+        return null;
       } catch (err) {
-        // fall through to deterministic fallback
+        lastErr = err;
       }
     }
     try {
@@ -549,10 +601,13 @@ INDEX_HTML = """<!doctype html>
       ta.select();
       const ok = document.execCommand("copy");
       document.body.removeChild(ta);
-      showCopyMessage(msgEl, ok ? "copied" : "copy failed");
+      return ok ? null : "execCommand failed";
     } catch (err) {
-      showCopyMessage(msgEl, "copy failed");
+      lastErr = err;
     }
+    if (lastErr && lastErr.message) return lastErr.message;
+    if (lastErr) return String(lastErr);
+    return "copy failed";
   }
 
   const STATUS_RANK = { "FAIL": 0, "SKIP": 1, "PASS": 2 };
@@ -681,6 +736,9 @@ INDEX_HTML = """<!doctype html>
       }
 
       const tdOpen = document.createElement("td");
+      const row = document.createElement("div");
+      row.className = "row";
+
       const btn = document.createElement("button");
       btn.textContent = "Open";
       btn.addEventListener("click", async () => {
@@ -697,7 +755,26 @@ INDEX_HTML = """<!doctype html>
         await refreshSummaryAndTree();
         await refreshStatus();
       });
-      tdOpen.appendChild(btn);
+      row.appendChild(btn);
+
+      const copyBtn = document.createElement("button");
+      copyBtn.textContent = "Copy";
+      copyBtn.addEventListener("click", async () => {
+        const text = r.copy_bundle || "";
+        if (!text) {
+          setRunsOverviewMeta("Copy failed: missing bundle");
+          return;
+        }
+        const err = await copyTextToClipboard(text);
+        if (err) {
+          setRunsOverviewMeta(`Copy failed: ${err}`);
+        } else {
+          setRunsOverviewMeta("Copied");
+        }
+      });
+      row.appendChild(copyBtn);
+
+      tdOpen.appendChild(row);
       tr.appendChild(tdOpen);
 
       body.appendChild(tr);
@@ -771,7 +848,8 @@ INDEX_HTML = """<!doctype html>
         msg.className = "details-copy-msg";
 
         copyBtn.addEventListener("click", async () => {
-          await copyTextToClipboard(summaryText, msg);
+          const err = await copyTextToClipboard(summaryText);
+          showCopyMessage(msg, err ? "copy failed" : "copied");
         });
 
         sumWrap.appendChild(sumText);
@@ -1262,11 +1340,13 @@ class UiHandler(BaseHTTPRequestHandler):
                 for r in run_dirs[idx:]:
                     meta = _run_meta(base, r)
                     meta["checks"] = _skip_checks("TIME BUDGET EXCEEDED")
+                    meta["copy_bundle"] = _format_copy_bundle(meta["run"], meta["checks"])
                     runs_out.append(meta)
                 break
 
             meta = _run_meta(base, d)
             meta["checks"] = _compute_governance_checks(d, self.cfg)
+            meta["copy_bundle"] = _format_copy_bundle(meta["run"], meta["checks"])
             runs_out.append(meta)
 
         elapsed_total = _now_monotonic_ms() - t0

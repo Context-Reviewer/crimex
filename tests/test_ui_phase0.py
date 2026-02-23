@@ -9,14 +9,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 import crimex.cli as cli
 import crimex.ui.server as ui_server
-from crimex.ui.server import UiConfig, UiHandler
+from crimex.ui.server import UiConfig, UiHandler, UiHTTPServer
 
 
 def _pick_free_port() -> int:
@@ -64,7 +63,7 @@ def _start_server(
     max_file_bytes: int = 100_000,
     cmd_timeout_s: float = 0.5,
     runs_status_budget_ms: int = 2000,
-) -> tuple[ThreadingHTTPServer, int]:
+) -> tuple[UiHTTPServer, int]:
     port = _pick_free_port()
     cfg = UiConfig(
         run_dir=run_dir,
@@ -75,7 +74,7 @@ def _start_server(
         cmd_timeout_s=cmd_timeout_s,
         runs_status_budget_ms=runs_status_budget_ms,
     )
-    httpd = ThreadingHTTPServer((cfg.host, cfg.port), UiHandler)
+    httpd = UiHTTPServer((cfg.host, cfg.port), UiHandler)
     httpd._cfg = cfg
     httpd._verbose = False
 
@@ -681,6 +680,99 @@ def test_ui_phase1d_overview_budget_skip_includes_meta(
             assert checks["qa"]["status"] == "SKIP"
             assert checks["validate"]["status"] == "SKIP"
             assert checks["verify_run"]["summary"] == "TIME BUDGET EXCEEDED"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.mark.timeout(10)
+def test_ui_phase1h_overview_copy_bundle_pass_and_collapse(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    base = tmp_path / "runs"
+    base.mkdir()
+    run_a = _make_minimal_run_dir(base, "runA")
+
+    def _fake_run(
+        argv: list[str],
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, timeout
+        cmd = argv[3] if len(argv) > 3 else ""
+        if cmd == "verify-run":
+            return _fake_completed_process(0, out="OK\t\tPASS  \nextra")
+        if cmd == "qa":
+            return _fake_completed_process(0, out="QA\tPASS")
+        if cmd == "validate":
+            return _fake_completed_process(0, out="VAL   OK")
+        return _fake_completed_process(2, err="unknown")
+
+    def _fake_now() -> int:
+        return 1000
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ui_server, "_now_monotonic_ms", _fake_now)
+
+    httpd, port = _start_server(run_a, base_dir=base, cmd_timeout_s=0.25, runs_status_budget_ms=10_000)
+    try:
+        data = _http_get_json(f"http://127.0.0.1:{port}/api/runs/overview")
+        item = data["runs"][0]
+        assert "copy_bundle" in item
+        expected = "\n".join(
+            [
+                "crimex run: runA",
+                "overall: PASS",
+                "verify_run: PASS exit=0 ms=0 summary=OK PASS",
+                "qa: PASS exit=0 ms=0 summary=QA PASS",
+                "validate: PASS exit=0 ms=0 summary=VAL OK",
+            ]
+        )
+        assert item["copy_bundle"] == expected
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.mark.timeout(10)
+def test_ui_phase1h_overview_copy_bundle_fail_overall(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    base = tmp_path / "runs"
+    base.mkdir()
+    run_a = _make_minimal_run_dir(base, "runA")
+
+    def _fake_run(
+        argv: list[str],
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, timeout
+        cmd = argv[3] if len(argv) > 3 else ""
+        if cmd == "verify-run":
+            return _fake_completed_process(0, out="OK")
+        if cmd == "qa":
+            return _fake_completed_process(1, err="QA\tFAIL")
+        if cmd == "validate":
+            return _fake_completed_process(0, out="VAL OK")
+        return _fake_completed_process(2, err="unknown")
+
+    def _fake_now() -> int:
+        return 1000
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ui_server, "_now_monotonic_ms", _fake_now)
+
+    httpd, port = _start_server(run_a, base_dir=base, cmd_timeout_s=0.25, runs_status_budget_ms=10_000)
+    try:
+        data = _http_get_json(f"http://127.0.0.1:{port}/api/runs/overview")
+        bundle = data["runs"][0]["copy_bundle"]
+        lines = bundle.splitlines()
+        assert lines[0] == "crimex run: runA"
+        assert lines[1] == "overall: FAIL"
+        assert lines[3] == "qa: FAIL exit=1 ms=0 summary=QA FAIL"
     finally:
         httpd.shutdown()
         httpd.server_close()
