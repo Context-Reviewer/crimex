@@ -244,7 +244,7 @@ def _format_copy_bundle(run: str, checks: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _build_diag_payload(run_row: dict[str, Any]) -> str:
+def _build_diag_obj(run_row: dict[str, Any]) -> dict[str, Any]:
     run = str(run_row.get("run") or "")
     checks = run_row.get("checks") or {}
     overall = _overall_status(checks)
@@ -273,7 +273,7 @@ def _build_diag_payload(run_row: dict[str, Any]) -> str:
             "elapsed_ms": elapsed_ms,
         }
 
-    payload = {
+    payload: dict[str, Any] = {
         "run": run,
         "overall": overall,
         "facts": {
@@ -293,7 +293,36 @@ def _build_diag_payload(run_row: dict[str, Any]) -> str:
             "bundle": f"{run}/run_bundle.zip",
         },
     }
+    return payload
+
+
+def _build_diag_payload(run_row: dict[str, Any]) -> str:
+    payload = _build_diag_obj(run_row)
     return json.dumps(payload, ensure_ascii=False, sort_keys=False, separators=(",", ":"))
+
+
+def _build_fail_jsonl(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+
+    status_rank = {"FAIL": 0, "SKIP": 1, "PASS": 2}
+
+    def _run_sort_key(row: dict[str, Any]) -> tuple[int, str]:
+        checks = row.get("checks") or {}
+        status = _overall_status(checks)
+        rank = status_rank.get(status, 2)
+        name = str(row.get("run") or "")
+        return rank, name
+
+    sorted_rows = sorted(list(rows), key=_run_sort_key)
+    lines: list[str] = []
+    for row in sorted_rows:
+        checks = row.get("checks") or {}
+        if _overall_status(checks) != "FAIL":
+            continue
+        payload = _build_diag_obj(row)
+        lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=False, separators=(",", ":")))
+    return "\n".join(lines)
 
 
 def _abs_under(base: Path, target: Path) -> str | None:
@@ -549,6 +578,8 @@ INDEX_HTML = """<!doctype html>
     <div class="body">
       <div class="row">
         <button id="runsOverviewBtn">Refresh overview</button>
+        <button id="runsFailJsonlBtn">Copy FAIL JSONL</button>
+        <span class="muted small" id="runsFailJsonlStatus"></span>
         <span class="muted small" id="runsOverviewMeta"></span>
       </div>
       <div style="height:10px"></div>
@@ -655,6 +686,12 @@ INDEX_HTML = """<!doctype html>
     el._timerId = setTimeout(() => {
       el.textContent = "";
     }, 1200);
+  }
+
+  function setRunsFailJsonlStatus(text) {
+    const el = $("runsFailJsonlStatus");
+    if (!el) return;
+    el.textContent = text || "";
   }
 
   function showCopyMessage(el, text) {
@@ -811,6 +848,15 @@ INDEX_HTML = """<!doctype html>
     if (an < bn) return -1;
     if (an > bn) return 1;
     return 0;
+  }
+
+  function buildFailJsonlFromOverview(data) {
+    const runs = (data && Array.isArray(data.runs)) ? data.runs.slice() : [];
+    const sorted = runs.slice();
+    sorted.sort(compareRuns);
+    const failRuns = sorted.filter((r) => overallStatus(r.checks || {}) === "FAIL");
+    const lines = failRuns.map((r) => buildDiagnostics(r));
+    return { text: lines.join("\n"), count: lines.length };
   }
 
   function applyRunsOverviewFilters(runs) {
@@ -1320,6 +1366,25 @@ INDEX_HTML = """<!doctype html>
 
   $("runsOverviewBtn").addEventListener("click", async () => {
     await refreshRunsOverview();
+  });
+
+  $("runsFailJsonlBtn").addEventListener("click", async () => {
+    if (!runsOverviewData || !Array.isArray(runsOverviewData.runs)) {
+      setRunsFailJsonlStatus("Load overview first");
+      return;
+    }
+    const result = buildFailJsonlFromOverview(runsOverviewData);
+    if (result.count === 0) {
+      setRunsFailJsonlStatus("No FAIL runs");
+      return;
+    }
+    const err = await copyTextToClipboard(result.text);
+    if (err) {
+      setRunsFailJsonlStatus(`Copy failed: ${err}`);
+      return;
+    }
+    const label = result.count === 1 ? "Copied 1 line" : `Copied ${result.count} lines`;
+    setRunsFailJsonlStatus(label);
   });
 
   const filterIds = ["filterFailOnly", "filterHidePass", "filterHideSkip"];

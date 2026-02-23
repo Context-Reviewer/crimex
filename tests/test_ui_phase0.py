@@ -936,3 +936,140 @@ def test_ui_phase1j_diag_payload_skip_defaults() -> None:
         '"facts":"runC/facts/facts.jsonl","bundle":"runC/run_bundle.zip"}}'
     )
     assert payload == expected
+
+
+def test_ui_phase1k_fail_jsonl_filters_and_orders() -> None:
+    row_b = {
+        "run": "runB",
+        "has_manifest": True,
+        "has_facts": True,
+        "has_bundle": True,
+        "checks": {
+            "verify_run": {
+                "status": "PASS",
+                "exit_code": 0,
+                "summary": "OK",
+                "elapsed_ms": 3,
+            },
+            "qa": {
+                "status": "FAIL",
+                "exit_code": 5,
+                "summary": "nope",
+                "elapsed_ms": 4,
+            },
+            "validate": {
+                "status": "PASS",
+                "exit_code": 0,
+                "summary": "OK",
+                "elapsed_ms": 5,
+            },
+        },
+    }
+    row_c = {
+        "run": "runC",
+        "has_manifest": False,
+        "has_facts": True,
+        "has_bundle": False,
+        "checks": {
+            "verify_run": {
+                "status": "PASS",
+                "exit_code": 0,
+                "summary": "OK",
+                "elapsed_ms": 1,
+            },
+            "qa": {
+                "status": "PASS",
+                "exit_code": 0,
+                "summary": "OK",
+                "elapsed_ms": 2,
+            },
+            "validate": {
+                "status": "PASS",
+                "exit_code": 0,
+                "summary": "OK",
+                "elapsed_ms": 3,
+            },
+        },
+    }
+    row_a = {
+        "run": "runA",
+        "has_manifest": True,
+        "has_facts": False,
+        "has_bundle": True,
+        "checks": {
+            "verify_run": {
+                "status": "FAIL",
+                "exit_code": 2,
+                "summary": "boom",
+                "elapsed_ms": 1,
+            },
+            "qa": {
+                "status": "PASS",
+                "exit_code": 0,
+                "summary": "ok",
+                "elapsed_ms": 2,
+            },
+            "validate": {
+                "status": "SKIP",
+                "exit_code": None,
+                "summary": "",
+                "elapsed_ms": 0,
+            },
+        },
+    }
+    jsonl = ui_server._build_fail_jsonl([row_b, row_c, row_a])
+    lines = jsonl.splitlines()
+    assert lines == [
+        ui_server._build_diag_payload(row_a),
+        ui_server._build_diag_payload(row_b),
+    ]
+
+
+def test_ui_phase1k_fail_jsonl_no_fails() -> None:
+    rows = [
+        {
+            "run": "runA",
+            "has_manifest": True,
+            "has_facts": True,
+            "has_bundle": True,
+            "checks": {
+                "verify_run": {"status": "PASS", "exit_code": 0, "summary": "OK", "elapsed_ms": 1},
+                "qa": {"status": "PASS", "exit_code": 0, "summary": "OK", "elapsed_ms": 2},
+                "validate": {"status": "PASS", "exit_code": 0, "summary": "OK", "elapsed_ms": 3},
+            },
+        },
+        {
+            "run": "runB",
+            "has_manifest": False,
+            "has_facts": False,
+            "has_bundle": False,
+            "checks": {},
+        },
+    ]
+    assert ui_server._build_fail_jsonl(rows) == ""
+
+
+def test_ui_phase1k_fail_jsonl_missing_checks_defaults() -> None:
+    rows = [
+        {
+            "run": "runX",
+            "checks": {
+                "verify_run": {
+                    "status": "FAIL",
+                    "exit_code": 1,
+                    "summary": "bad",
+                    "elapsed_ms": 3,
+                }
+            },
+        }
+    ]
+    jsonl = ui_server._build_fail_jsonl(rows)
+    expected = (
+        '{"run":"runX","overall":"FAIL","facts":{"has_manifest":false,"has_facts":false,'
+        '"has_bundle":false},"checks":{"verify_run":{"status":"FAIL","exit_code":1,'
+        '"summary":"bad","elapsed_ms":3},"qa":{"status":"SKIP","exit_code":null,'
+        '"summary":"","elapsed_ms":0},"validate":{"status":"SKIP","exit_code":null,'
+        '"summary":"","elapsed_ms":0}},"paths":{"run_rel":"runX","manifest":"runX/run_manifest.json",'
+        '"facts":"runX/facts/facts.jsonl","bundle":"runX/run_bundle.zip"}}'
+    )
+    assert jsonl == expected
