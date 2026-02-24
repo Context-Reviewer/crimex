@@ -314,7 +314,7 @@ def _build_fail_jsonl(rows: list[dict[str, Any]]) -> str:
         name = str(row.get("run") or "")
         return rank, name
 
-    sorted_rows = sorted(list(rows), key=_run_sort_key)
+    sorted_rows = sorted(rows, key=_run_sort_key)
     lines: list[str] = []
     for row in sorted_rows:
         checks = row.get("checks") or {}
