@@ -1699,7 +1699,7 @@ class UiHandler(BaseHTTPRequestHandler):
             if payload is None or created_ms is None:
                 self._send_json(
                     HTTPStatus.CONFLICT,
-                    {"error": "snapshot missing; use mode=refresh or compute", "snapshot": {"exists": False}},
+                    {"error": "snapshot missing; use mode=refresh", "snapshot": {"exists": False}},
                 )
                 return
             self._send_json(HTTPStatus.OK, self._with_snapshot_meta(payload, created_ms))
@@ -1736,7 +1736,12 @@ class UiHandler(BaseHTTPRequestHandler):
             "elapsed_ms": int(elapsed_total),
             "budget_ms": int(budget_ms),
         }
-        # Default behavior is compute (and refresh overwrites) to keep UI deterministic.
+        if mode == "compute":
+            out = dict(payload)
+            out["snapshot"] = {"exists": False}
+            self._send_json(HTTPStatus.OK, out)
+            return
+        # Default behavior is refresh (and refresh overwrites) to keep UI deterministic.
         created_ms = self._set_overview_snapshot(payload)
         self._send_json(HTTPStatus.OK, self._with_snapshot_meta(payload, created_ms))
 

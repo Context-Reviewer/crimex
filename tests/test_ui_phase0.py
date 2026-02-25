@@ -1111,6 +1111,52 @@ def test_ui_phase1l_overview_snapshot_skips_subprocess(
 
 
 @pytest.mark.timeout(10)
+def test_ui_phase1l_overview_compute_does_not_overwrite_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "base"
+    base.mkdir()
+    run_a = _make_minimal_run_dir(base, "runA")
+    _make_minimal_run_dir(base, "runB")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(list(argv))
+        return _fake_completed_process(0, out="OK")
+
+    now = {"ms": 1000}
+
+    def _fake_now() -> int:
+        return int(now["ms"])
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ui_server, "_now_monotonic_ms", _fake_now)
+
+    httpd, port = _start_server(run_a, base_dir=base, cmd_timeout_s=0.1, runs_status_budget_ms=10_000)
+    try:
+        data_refresh = _http_get_json(f"http://127.0.0.1:{port}/api/runs/overview?mode=refresh")
+        assert data_refresh["snapshot"]["exists"] is True
+        created_1 = int(data_refresh["snapshot"]["created_ms"])
+
+        before_calls = len(calls)
+        now["ms"] = 2000
+        data_compute = _http_get_json(f"http://127.0.0.1:{port}/api/runs/overview?mode=compute")
+        assert data_compute["snapshot"]["exists"] is False
+        assert len(calls) > before_calls
+
+        now["ms"] = 3000
+        data_snapshot = _http_get_json(f"http://127.0.0.1:{port}/api/runs/overview?mode=snapshot")
+        assert data_snapshot["snapshot"]["exists"] is True
+        created_2 = int(data_snapshot["snapshot"]["created_ms"])
+        assert created_2 == created_1
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.mark.timeout(10)
 def test_ui_phase1l_overview_snapshot_missing_returns_error(tmp_path: Path) -> None:
     base = tmp_path / "base"
     base.mkdir()
