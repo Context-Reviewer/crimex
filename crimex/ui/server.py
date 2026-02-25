@@ -8,6 +8,7 @@ import posixpath
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from collections.abc import Iterable
@@ -360,6 +361,15 @@ def _pick_free_port(host: str) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
         return int(s.getsockname()[1])
+
+
+def _overview_cache_key(cfg: UiConfig) -> str:
+    data = {
+        "base_dir": str(cfg.base_dir),
+        "cmd_timeout_s": float(cfg.cmd_timeout_s),
+        "runs_status_budget_ms": int(cfg.runs_status_budget_ms),
+    }
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _as_posix_rel(base: Path, p: Path) -> str:
@@ -1337,9 +1347,13 @@ INDEX_HTML = """<!doctype html>
   async function refreshRunsOverview() {
     $("runsOverviewMeta").textContent = "Loading...";
     try {
-      const data = await api("/api/runs/overview");
+      const data = await api("/api/runs/overview?mode=refresh");
       renderRunsOverview(data);
-      $("runsOverviewMeta").textContent = `elapsed_ms=${data.elapsed_ms || 0} budget_ms=${data.budget_ms || 0}`;
+      let meta = `elapsed_ms=${data.elapsed_ms || 0} budget_ms=${data.budget_ms || 0}`;
+      if (data.snapshot && data.snapshot.exists) {
+        meta += ` snapshot_age_ms=${data.snapshot.age_ms || 0}`;
+      }
+      $("runsOverviewMeta").textContent = meta;
     } catch (e) {
       $("runsOverviewMeta").textContent = `ERROR: ${e}`;
     } finally {
@@ -1431,6 +1445,8 @@ class UiConfig:
 class UiHTTPServer(ThreadingHTTPServer):
     _cfg: UiConfig
     _verbose: bool
+    _overview_snapshots: dict[str, dict[str, Any]]
+    _overview_snapshot_lock: threading.Lock
 
 
 def _compute_governance_checks(run_dir: Path, cfg: UiConfig) -> dict[str, Any]:
@@ -1564,7 +1580,7 @@ class UiHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/runs/overview":
-            self._handle_runs_overview()
+            self._handle_runs_overview(parsed.query)
             return
 
         if path == "/api/run/summary":
@@ -1635,7 +1651,63 @@ class UiHandler(BaseHTTPRequestHandler):
             },
         )
 
-    def _handle_runs_overview(self) -> None:
+    def _overview_cache(self) -> tuple[dict[str, dict[str, Any]], threading.Lock]:
+        server = self._server()
+        if not hasattr(server, "_overview_snapshots"):
+            server._overview_snapshots = {}
+        if not hasattr(server, "_overview_snapshot_lock"):
+            server._overview_snapshot_lock = threading.Lock()
+        return server._overview_snapshots, server._overview_snapshot_lock
+
+    def _get_overview_snapshot(self) -> tuple[dict[str, Any] | None, int | None]:
+        snapshots, lock = self._overview_cache()
+        key = _overview_cache_key(self.cfg)
+        with lock:
+            snap = snapshots.get(key)
+            if not snap:
+                return None, None
+            payload = snap.get("payload")
+            created_ms = snap.get("created_ms")
+        if not isinstance(payload, dict) or not isinstance(created_ms, int):
+            return None, None
+        return payload, created_ms
+
+    def _set_overview_snapshot(self, payload: dict[str, Any]) -> int:
+        snapshots, lock = self._overview_cache()
+        key = _overview_cache_key(self.cfg)
+        created_ms = _now_monotonic_ms()
+        with lock:
+            snapshots[key] = {"created_ms": created_ms, "payload": payload}
+        return created_ms
+
+    def _with_snapshot_meta(self, payload: dict[str, Any], created_ms: int) -> dict[str, Any]:
+        now_ms = _now_monotonic_ms()
+        age_ms = int(max(0, now_ms - created_ms))
+        out = dict(payload)
+        out["snapshot"] = {
+            "exists": True,
+            "created_ms": int(created_ms),
+            "age_ms": age_ms,
+        }
+        return out
+
+    def _handle_runs_overview(self, query: str) -> None:
+        params = urllib.parse.parse_qs(query, keep_blank_values=True)
+        mode = (params.get("mode") or [""])[0].strip().lower()
+        if mode in ("snapshot",):
+            payload, created_ms = self._get_overview_snapshot()
+            if payload is None or created_ms is None:
+                self._send_json(
+                    HTTPStatus.CONFLICT,
+                    {"error": "snapshot missing; use mode=refresh or compute", "snapshot": {"exists": False}},
+                )
+                return
+            self._send_json(HTTPStatus.OK, self._with_snapshot_meta(payload, created_ms))
+            return
+        if mode not in ("", "compute", "refresh"):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"unsupported mode: {mode}"})
+            return
+
         base = self.cfg.base_dir
         t0 = _now_monotonic_ms()
         runs_out: list[dict[str, Any]] = []
@@ -1658,15 +1730,15 @@ class UiHandler(BaseHTTPRequestHandler):
             runs_out.append(meta)
 
         elapsed_total = _now_monotonic_ms() - t0
-        self._send_json(
-            HTTPStatus.OK,
-            {
-                "base_dir": str(base),
-                "runs": runs_out,
-                "elapsed_ms": int(elapsed_total),
-                "budget_ms": int(budget_ms),
-            },
-        )
+        payload = {
+            "base_dir": str(base),
+            "runs": runs_out,
+            "elapsed_ms": int(elapsed_total),
+            "budget_ms": int(budget_ms),
+        }
+        # Default behavior is compute (and refresh overwrites) to keep UI deterministic.
+        created_ms = self._set_overview_snapshot(payload)
+        self._send_json(HTTPStatus.OK, self._with_snapshot_meta(payload, created_ms))
 
     def _handle_summary(self, query: str) -> None:
         run_dir, err = self._selected_run_dir_from_query(query)
@@ -1849,6 +1921,8 @@ def main(argv: list[str] | None = None) -> int:
     httpd = UiHTTPServer((cfg.host, cfg.port), UiHandler)
     httpd._cfg = cfg
     httpd._verbose = bool(args.verbose)
+    httpd._overview_snapshots = {}
+    httpd._overview_snapshot_lock = threading.Lock()
 
     print("crimex UI (Phase 1D) running (read-only)")
     print(f"base_dir: {cfg.base_dir}")

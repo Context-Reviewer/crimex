@@ -1073,3 +1073,54 @@ def test_ui_phase1k_fail_jsonl_missing_checks_defaults() -> None:
         '"facts":"runX/facts/facts.jsonl","bundle":"runX/run_bundle.zip"}}'
     )
     assert jsonl == expected
+
+
+@pytest.mark.timeout(10)
+def test_ui_phase1l_overview_snapshot_skips_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "base"
+    base.mkdir()
+    run_a = _make_minimal_run_dir(base, "runA")
+    _make_minimal_run_dir(base, "runB")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(list(argv))
+        return _fake_completed_process(0, out="OK")
+
+    monkeypatch.setattr(ui_server.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ui_server, "_now_monotonic_ms", lambda: 1000)
+
+    httpd, port = _start_server(run_a, base_dir=base, cmd_timeout_s=0.1, runs_status_budget_ms=10_000)
+    try:
+        _http_get_json(f"http://127.0.0.1:{port}/api/runs/overview?mode=refresh")
+        cmds = [c[3] for c in calls]
+        assert cmds == ["verify-run", "qa", "validate", "verify-run", "qa", "validate"]
+        assert "runA" in calls[0][5]
+        assert "runB" in calls[3][5]
+
+        before = len(calls)
+        _http_get_json(f"http://127.0.0.1:{port}/api/runs/overview?mode=snapshot")
+        assert len(calls) == before
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@pytest.mark.timeout(10)
+def test_ui_phase1l_overview_snapshot_missing_returns_error(tmp_path: Path) -> None:
+    base = tmp_path / "base"
+    base.mkdir()
+    run_dir = _make_minimal_run_dir(base, "runA")
+    httpd, port = _start_server(run_dir, base_dir=base)
+
+    try:
+        status, data = _http_get_json_status(f"http://127.0.0.1:{port}/api/runs/overview?mode=snapshot")
+        assert status == 409
+        assert "snapshot" in (data.get("error") or "")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
